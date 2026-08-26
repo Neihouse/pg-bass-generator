@@ -672,6 +672,99 @@ test("wet envelope and diffusion parameters stay in range", function () {
   }
 });
 
+test("every sounding step emits a playable MIDI note event", function () {
+  var sb = makeSandbox();
+  call(sb, "density", 0.8);
+  call(sb, "dump");
+  var d = lastDump(sb).phrase;
+  tickSteps(sb, d.bars * 16);
+
+  var notes = collect(sb, 1, "note");
+  var trigs = collect(sb, 1, "trig").filter(function (t) { return t[1] > 0; });
+  assert(notes.length > 0, "no MIDI note events emitted");
+  // a slide ties (no retrigger) but must still produce its own MIDI note,
+  // otherwise the downstream synth simply never hears that pitch
+  assert(notes.length >= trigs.length,
+    "fewer MIDI notes (" + notes.length + ") than voice triggers (" + trigs.length + ")");
+
+  notes.forEach(function (n) {
+    var pitch = n[1], vel = n[2], ms = n[3];
+    assert(pitch === Math.round(pitch) && pitch >= 0 && pitch <= 127,
+      "note pitch not a valid MIDI value: " + pitch);
+    assert(vel >= 1 && vel <= 127, "note velocity out of range: " + vel);
+    assert(ms === Math.round(ms) && ms >= 15,
+      "note duration must be a positive whole ms, got " + ms);
+  });
+});
+
+test("ties become overlapping MIDI notes, not held ones", function () {
+  var found = false;
+  for (var trial = 0; trial < 12 && !found; trial++) {
+    var sb = makeSandbox();
+    call(sb, "groove", 4); // acidic: heaviest slide probability
+    call(sb, "density", 0.9);
+    call(sb, "Mutate");
+    call(sb, "dump");
+    var d = lastDump(sb).phrase;
+
+    // find an onset whose *next* onset slides — that is the tie case
+    var tie = -1;
+    for (var s = 0; s < d.onsets.length && tie < 0; s++) {
+      if (!d.onsets[s]) continue;
+      for (var i = s + 1; i < s + 3 && i < d.onsets.length; i++) {
+        if (d.onsets[i]) { if (d.slides[i]) tie = s; break; }
+      }
+    }
+    if (tie < 0) continue;
+    found = true;
+
+    var evs = vm.runInContext("noteEvents(phrase)", sb);
+    var a = null, b = null;
+    evs.forEach(function (e, k) {
+      if (Math.floor(e.start / 0.25 + 0.001) === tie) { a = e; b = evs[k + 1]; }
+    });
+    assert(a && b, "tie step " + tie + " missing from the note events");
+    assert(a.start + a.dur > b.start,
+      "tied note ends at " + (a.start + a.dur) + " but the next starts at " +
+      b.start + " — no overlap, so a mono synth would retrigger instead of glide");
+  }
+  assert(found, "acidic groove never produced a slide across 12 trials");
+});
+
+test("captured note events reproduce the phrase in beats", function () {
+  var sb = makeSandbox();
+  call(sb, "density", 0.7);
+  call(sb, "dump");
+  var d = lastDump(sb).phrase;
+  var evs = vm.runInContext("noteEvents(phrase)", sb);
+
+  var onsets = d.onsets.filter(Boolean).length;
+  assert(evs.length === onsets,
+    "captured " + evs.length + " notes for " + onsets + " onsets");
+
+  var barBeats = d.bars * 4;
+  var prev = -1;
+  evs.forEach(function (e) {
+    assert(e.start >= 0 && e.start < barBeats,
+      "note starts outside the clip: " + e.start + " of " + barBeats);
+    assert(e.start > prev, "captured notes are not in ascending time order");
+    prev = e.start;
+    assert(e.dur >= 0.02, "captured duration too short to sound: " + e.dur);
+    assert(e.vel >= 1 && e.vel <= 127, "captured velocity out of range: " + e.vel);
+    assert(e.pitch === Math.round(e.pitch), "captured pitch not an integer: " + e.pitch);
+  });
+
+  // microtiming survives capture: a step that rushes lands before its grid beat
+  var rushed = 0;
+  d.onsets.forEach(function (on, s) { if (on && d.micros[s] < -0.02) rushed++; });
+  if (rushed) {
+    var early = evs.filter(function (e) {
+      return e.start < Math.round(e.start / 0.25) * 0.25 - 1e-9;
+    });
+    assert(early.length > 0, "phrase has rushed steps but no note captured ahead of its beat");
+  }
+});
+
 // ----------------------------------------------------------------
 
 console.log("\n" + passed + " passed, " + failures + " failed");

@@ -614,6 +614,14 @@ function fireStep(s) {
   var glide = p.slides[s] ? Math.max(20, stepMs * 0.45) : 4;
   var tim = clamp(p.timbres[s] + fast.tim, -0.8, 0.8); // §4.2 fast walk rides the step layer
 
+  // does the next onset slide into this one? decides both the gate below and how
+  // long the MIDI note has to be to read as a slide downstream
+  var n = p.onsets.length;
+  var next = -1;
+  for (var i = s + 1; i < s + 3 && i < n; i++) if (p.onsets[i]) { next = i; break; }
+  var willTie = next >= 0 && p.slides[next];
+  var gateMs = Math.max(15, p.gates[s] * stepMs);
+
   // §2.1 filter state machine: accent drives coupled env/drive/decay changes
   outlet(1, "fdec", fdecBase() * (acc ? 0.8 : 1));
   outlet(1, "fmul", (acc ? 1.55 : 1.0) * (1 + tim * 0.4));
@@ -632,17 +640,17 @@ function fireStep(s) {
   outlet(0, "wet",
     clamp(Math.pow(P.wet, 1.25) + (p.wets[s] + fast.wet + slow.wet) * P.wet, 0, 1), 25);
 
+  // §6 MIDI note for the MIDI-effect build. The instrument build leaves this
+  // unrouted. A tie becomes a legato overlap into the next note rather than a
+  // held note: that is what makes a downstream mono synth glide instead of
+  // retrigger, which is the same thing the tie does to our own voice.
+  outlet(1, "note", p.pitches[s], p.vels[s],
+    Math.round(willTie ? (next - s) * stepMs + 30 : gateMs));
+
   // hold through a tie, otherwise schedule the gate off
-  var n = p.onsets.length;
-  var next = -1;
-  for (var i = s + 1; i < s + 3 && i < n; i++) if (p.onsets[i]) { next = i; break; }
-  var willTie = next >= 0 && p.slides[next];
   if (offTask) offTask.cancel();
   offPending = false;
-  if (!willTie) {
-    var gateMs = Math.max(15, p.gates[s] * stepMs);
-    if (offTask) { offTask.schedule(gateMs); offPending = true; }
-  }
+  if (!willTie && offTask) { offTask.schedule(gateMs); offPending = true; }
 }
 
 function firePending() { fireStep(pendingStep); }
@@ -737,6 +745,96 @@ function updateDisplay() {
     "·", grooveNow().name,
     "·", phrase.bars + (phrase.bars === 1 ? " bar" : " bars"),
     "·", phrase.contour);
+}
+
+// ---------------------------------------------------------------- MIDI capture (§6)
+// The device is an instrument, so its notes never existed as MIDI — Live had
+// nothing to arm-record or Capture. This writes the phrase into a Live clip
+// directly instead, which also means the capture is exact: the microtiming and
+// the slide overlaps go in as written, not as one dice roll of a live pass.
+
+// The phrase as plain note events, in beats from the phrase start. Pure: no
+// Live API, no outlets, so the harness can check it.
+function noteEvents(p) {
+  p = p || phrase;
+  var evs = [];
+  if (!p || !p.vels) return evs;
+  var n = p.onsets.length;
+  // the microtiming bound in fractional steps, matching microMs()
+  var lim = Math.min(30 / Math.max(1, stepMs), 0.35);
+  for (var s = 0; s < n; s++) {
+    if (!p.onsets[s]) continue;
+    var start = (s + clamp(p.micros[s], -lim, lim)) * 0.25;
+    if (start < 0) start = 0;               // step 0 never rushes past the clip start
+
+    var next = -1;
+    for (var i = s + 1; i < s + 3 && i < n; i++) if (p.onsets[i]) { next = i; break; }
+    var dur;
+    if (next >= 0 && p.slides[next]) {
+      // tie: overlap into the next note so a mono synth glides rather than retriggers
+      var nStart = (next + clamp(p.micros[next], -lim, lim)) * 0.25;
+      dur = nStart - start + 0.03;
+    } else {
+      dur = Math.max(15 / Math.max(1, stepMs), p.gates[s]) * 0.25;
+    }
+    evs.push({ pitch: p.pitches[s], start: start,
+               dur: Math.max(0.02, dur), vel: p.vels[s] });
+  }
+  return evs;
+}
+
+function apiNoop() {} // LiveAPI wants a callback even when nothing observes
+
+function captureSlot(track) { // first empty slot on our own track, or -1
+  var count = track.getcount("clip_slots");
+  for (var i = 0; i < count; i++) {
+    var slot = new LiveAPI(apiNoop, "this_device canonical_parent clip_slots " + i);
+    if (Number(slot.get("has_clip")) === 0) return i;
+  }
+  return -1;
+}
+
+function Capture() { // §5.3 button: write the current phrase into a clip
+  var evs = noteEvents(phrase);
+  if (!evs.length) return;
+  try {
+    var track = new LiveAPI(apiNoop, "this_device canonical_parent");
+    var idx = captureSlot(track);
+    if (idx < 0) { outlet(2, "disp", "capture:", "no", "empty", "slot"); return; }
+
+    var base = "this_device canonical_parent clip_slots " + idx;
+    var slot = new LiveAPI(apiNoop, base);
+    slot.call("create_clip", phrase.bars * 4);
+    var clip = new LiveAPI(apiNoop, base + " clip");
+    clip.set("name", "PG " + phraseName(phrase));
+    writeNotes(clip, evs);
+    outlet(2, "disp", "captured", phraseName(phrase), "→", "slot", idx + 1);
+  } catch (e) {
+    post("PG capture failed: " + e + "\n");
+    outlet(2, "disp", "capture", "failed", "—", "see", "Max", "Console");
+  }
+}
+
+function writeNotes(clip, evs) {
+  // Live 11+ takes a dict of notes; older sets only understand the note/done
+  // sequence, so fall back rather than fail on a machine we can't test here.
+  try {
+    var notes = [];
+    for (var i = 0; i < evs.length; i++) {
+      notes.push({ pitch: evs[i].pitch, start_time: evs[i].start,
+                   duration: evs[i].dur, velocity: evs[i].vel, mute: 0 });
+    }
+    var d = new Dict();
+    d.parse(JSON.stringify({ notes: notes }));
+    clip.call("add_new_notes", d);
+  } catch (e) {
+    clip.call("set_notes");
+    clip.call("notes", evs.length);
+    for (var k = 0; k < evs.length; k++) {
+      clip.call("note", evs[k].pitch, evs[k].start, evs[k].dur, evs[k].vel, 0);
+    }
+    clip.call("done");
+  }
 }
 
 // ---------------------------------------------------------------- messages (patch → js)

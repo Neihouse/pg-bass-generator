@@ -17,8 +17,16 @@ ROOT = Path(__file__).resolve().parent.parent
 DEVICE_DIR = ROOT / "device"
 
 
+# .amxd device type codes, as both the chunk 4cc and the project dict's int form
+DEVICE_TYPES = {
+    "instrument": (b"iiii", 1768515945),
+    "midi": (b"mmmm", 1835887981),
+}
+
+
 class Patch:
-    def __init__(self):
+    def __init__(self, amxdtype=1768515945):
+        self.amxdtype = amxdtype
         self.boxes = []
         self.lines = []
         self.ids = {}
@@ -147,7 +155,7 @@ class Patch:
                     "layout": {},
                     "searchpath": {},
                     "detailsvisible": 0,
-                    "amxdtype": 1768515945,
+                    "amxdtype": self.amxdtype,
                     "readonly": 0,
                     "devpathtype": 0,
                     "devpath": ".",
@@ -195,8 +203,47 @@ def menu_attrs(longname, items, initial_idx):
     }
 
 
-def build():
-    p = Patch()
+def add_midi_out(p, note_params):
+    """MIDI-effect build: the generated notes leave the device as real MIDI.
+
+    This has to be a separate device rather than a switch on the instrument.
+    An instrument sits at the *end* of Live's MIDI chain, so nothing downstream
+    can receive notes from it — which is why none of the nine factory Max
+    instruments contain a [midiout], and why Cycling '74 ship their own
+    "Max MIDI Sender" example as a MIDI effect.
+    """
+    p.obj("midiin", "midiin", numinlets=1, numoutlets=1, outlettype=["int"])
+    p.obj("makenote", "makenote 100 200", numinlets=3, numoutlets=2,
+          outlettype=["int", "int"])
+    p.obj("pack_note", "pack 0 0", numinlets=2, numoutlets=1, outlettype=[""])
+    p.obj("midiformat", "midiformat", numinlets=8, numoutlets=2,
+          outlettype=["int", ""])
+    p.obj("midiout", "midiout", numinlets=1, numoutlets=0)
+
+    # "note <pitch> <vel> <ms>" distributes across makenote's three inlets —
+    # Max fills the right inlets first, so velocity and duration are already
+    # set by the time the pitch triggers the note.
+    p.connect("route_note", note_params.index("note"), "makenote", 0)
+    # makenote fires velocity (outlet 1) before pitch (outlet 0), so pack's cold
+    # inlet is always current when the hot inlet triggers.
+    p.connect("makenote", 1, "pack_note", 1)
+    p.connect("makenote", 0, "pack_note", 0)
+    p.connect("pack_note", 0, "midiformat", 0)
+    p.connect("midiformat", 0, "midiout", 0)
+
+    # On stop the core sends "trig 0" to close its own voice. Here that has to
+    # flush makenote's pending note-offs instead, or every note it has already
+    # started hangs on the downstream instrument.
+    p.obj("stop_if", "if $f1 <= 0. then stop", numinlets=1, numoutlets=1)
+    p.connect("route_note", note_params.index("trig"), "stop_if", 0)
+    p.connect("stop_if", 0, "makenote", 0)
+
+    # pass incoming MIDI through so the track still plays from the keyboard
+    p.connect("midiin", 0, "midiout", 0)
+
+
+def build(kind="instrument"):
+    p = Patch(amxdtype=DEVICE_TYPES[kind][1])
 
     # ---------------------------------------------------------------- UI (presentation)
     p.box("title", "comment", "PG BASS GENERATOR — Primordial Groove",
@@ -238,7 +285,7 @@ def build():
     p.box("lock_label", "comment", "lock",
           pres=[293.0, 96.0, 36.0, 16.0], extra={"fontsize": 9.0}, numoutlets=0)
 
-    buttons = ["Mutate", "Return", "Reseed", "Rhythm", "Pitch"]
+    buttons = ["Mutate", "Return", "Reseed", "Rhythm", "Pitch", "Capture"]
     for i, name in enumerate(buttons):
         p.box("btn_" + name.lower(), "message", name,
               pres=[4.0 + i * 58.0, 120.0, 54.0, 18.0],
@@ -306,7 +353,8 @@ def build():
                     "state"]
     p.obj("route_synth", "route " + " ".join(synth_params),
           numinlets=1, numoutlets=len(synth_params) + 1)
-    note_params = ["pitch", "spitch", "trig", "fmul", "dmul", "fdec"]
+    # "note" is the MIDI-effect build's note event; the instrument leaves it unrouted
+    note_params = ["pitch", "spitch", "trig", "fmul", "dmul", "fdec", "note"]
     p.obj("route_note", "route " + " ".join(note_params),
           numinlets=1, numoutlets=len(note_params) + 1)
     p.obj("route_disp", "route disp dump", numinlets=1, numoutlets=3)
@@ -323,6 +371,12 @@ def build():
     p.obj("prepend_set_state", "prepend set", numinlets=1, numoutlets=1)
     p.connect("route_synth", synth_params.index("state"), "prepend_set_state", 0)
     p.connect("prepend_set_state", 0, "pattr_state", 0)
+
+    # The MIDI-effect build shares everything above — same core, same UI, same
+    # persisted state — and swaps the entire synth below for a [midiout].
+    if kind == "midi":
+        add_midi_out(p, note_params)
+        return p
 
     # ---------------------------------------------------------------- smoothing lines
     p.sig("l_cutoff", "line~", 2, numoutlets=2)   # cutoff base Hz
@@ -571,31 +625,34 @@ def validate(p):
     assert len(names) == len(set(names)), "duplicate parameter longnames"
 
 
-def main():
-    p = build()
+def emit(kind, name):
+    p = build(kind)
     validate(p)
-    doc = p.to_dict()
-    json_bytes = json.dumps(doc, indent=1).encode("utf-8") + b"\n"
+    json_bytes = json.dumps(p.to_dict(), indent=1).encode("utf-8") + b"\n"
 
     DEVICE_DIR.mkdir(exist_ok=True)
-    maxpat = DEVICE_DIR / "PG Bass Generator.maxpat"
+    maxpat = DEVICE_DIR / f"{name}.maxpat"
     maxpat.write_bytes(json_bytes)
 
     # .amxd container (IFF-style chunks, verified against Live 12 factory devices):
-    #   "ampf" <u32 size=4> "iiii"   device type: instrument
+    #   "ampf" <u32 size=4> <4cc>    device type: "iiii" instrument / "mmmm" MIDI effect
     #   "meta" <u32 size=4> <u32 0>  plain uncompressed patcher payload
     #   "ptch" <u32 size>   <patcher JSON, null-terminated>
     payload = json_bytes + b"\x00"
-    amxd_bytes = (b"ampf" + struct.pack("<I", 4) + b"iiii"
+    amxd_bytes = (b"ampf" + struct.pack("<I", 4) + DEVICE_TYPES[kind][0]
                   + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)
                   + b"ptch" + struct.pack("<I", len(payload)) + payload)
-    amxd = DEVICE_DIR / "PG Bass Generator.amxd"
+    amxd = DEVICE_DIR / f"{name}.amxd"
     amxd.write_bytes(amxd_bytes)
 
     json.loads(maxpat.read_text())  # round-trip sanity
-    print(f"boxes: {len(p.boxes)}  lines: {len(p.lines)}  params: {len(p.params)}")
-    print(f"wrote {maxpat.name} ({maxpat.stat().st_size} bytes)")
-    print(f"wrote {amxd.name} ({amxd.stat().st_size} bytes)")
+    print(f"{name}: {kind}  boxes: {len(p.boxes)}  lines: {len(p.lines)}  "
+          f"params: {len(p.params)}  amxd: {amxd.stat().st_size} bytes")
+
+
+def main():
+    emit("instrument", "PG Bass Generator")
+    emit("midi", "PG Bass Generator MIDI")
 
 
 if __name__ == "__main__":
