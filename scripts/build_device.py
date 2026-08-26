@@ -287,7 +287,7 @@ def build():
                     "asus", "sub", "wet", "duck", "fb", "dly", "dly2"]
     p.obj("route_synth", "route " + " ".join(synth_params),
           numinlets=1, numoutlets=len(synth_params) + 1)
-    note_params = ["pitch", "trig", "fmul", "dmul", "fdec"]
+    note_params = ["pitch", "spitch", "trig", "fmul", "dmul", "fdec"]
     p.obj("route_note", "route " + " ".join(note_params),
           numinlets=1, numoutlets=len(note_params) + 1)
     p.obj("route_disp", "route disp dump", numinlets=1, numoutlets=3)
@@ -305,12 +305,14 @@ def build():
     p.sig("l_drv", "line~", 2, numoutlets=2)      # pre-filter drive amount
     p.sig("l_wet", "line~", 2, numoutlets=2)      # wet send level
     p.sig("l_pitch", "line~", 2, numoutlets=2)    # note pitch (MIDI, glides)
+    p.sig("l_spitch", "line~", 2, numoutlets=2)   # sub pitch (MIDI, folded 24-35)
 
     p.connect("route_synth", synth_params.index("cutoff"), "l_cutoff", 0)
     p.connect("route_synth", synth_params.index("envd"), "l_envd", 0)
     p.connect("route_synth", synth_params.index("drv"), "l_drv", 0)
     p.connect("route_synth", synth_params.index("wet"), "l_wet", 0)
     p.connect("route_note", note_params.index("pitch"), "l_pitch", 0)
+    p.connect("route_note", note_params.index("spitch"), "l_spitch", 0)
 
     # ---------------------------------------------------------------- envelopes
     # amp: fast attack, chunk-scaled decay/sustain; filter: snappy, sustain 0
@@ -326,8 +328,8 @@ def build():
     p.sig("mtof_main", "mtof~", 1)
     p.sig("osc_saw", "saw~", 2)
     p.sig("osc_rect", "rect~", 2)
-    p.sig("saw_gain", "*~ 0.8", 2)
-    p.sig("rect_gain", "*~ 0.3", 2)
+    p.sig("saw_gain", "*~ 0.6", 2)
+    p.sig("rect_gain", "*~ 0.45", 2)
     p.sig("osc_mix", "+~", 2)
     p.connect("l_pitch", 0, "mtof_main", 0)
     p.connect("mtof_main", 0, "osc_saw", 0)
@@ -378,22 +380,26 @@ def build():
     p.connect("route_synth", synth_params.index("gain"), "gain_mul", 1)
 
     # ---------------------------------------------------------------- sub oscillator (§2.5)
-    p.sig("sub_offset", "-~ 12.", 2)
+    # pitch arrives pre-folded (MIDI 24-35, 32.7-61.7 Hz) from js; light tanh~
+    # saturation adds 65-130 Hz harmonics so the sub reads on small speakers
     p.sig("mtof_sub", "mtof~", 1)
     p.sig("osc_sub", "cycle~", 2)
+    p.sig("sub_sat_pre", "*~ 1.5", 2)
+    p.sig("sub_sat", "tanh~", 1)
     p.sig("sub_env", "*~ 0.", 2)
     p.sig("sub_mul", "*~ 0.6", 2)
-    p.connect("l_pitch", 0, "sub_offset", 0)
-    p.connect("sub_offset", 0, "mtof_sub", 0)
+    p.connect("l_spitch", 0, "mtof_sub", 0)
     p.connect("mtof_sub", 0, "osc_sub", 0)
-    p.connect("osc_sub", 0, "sub_env", 0)
+    p.connect("osc_sub", 0, "sub_sat_pre", 0)
+    p.connect("sub_sat_pre", 0, "sub_sat", 0)
+    p.connect("sub_sat", 0, "sub_env", 0)
     p.connect("adsr_amp", 0, "sub_env", 1)
     p.connect("sub_env", 0, "sub_mul", 0)
     p.connect("route_synth", synth_params.index("sub"), "sub_mul", 1)
 
     # ---------------------------------------------------------------- wet core (§3)
     # send = highpassed dry, level enveloped, ducked against the amp env
-    p.sig("wet_hp", "svf~ 420. 0.2", 3, numoutlets=4)
+    p.sig("wet_hp", "svf~ 500. 0.2", 3, numoutlets=4)  # §3.1 crossover: wet lives above 500 Hz
     p.sig("wet_mul", "*~ 0.", 2)
     p.sig("duckamt_mul", "*~ 0.6", 2)
     p.sig("duck_inv", "!-~ 1.", 2)
@@ -423,19 +429,26 @@ def build():
 
     # ---------------------------------------------------------------- output stage
     # §3.4 low-end stereo safety: dry + sub stay centered, only the wet taps differ L/R
+    # §3.3 return ducking: delay tails breathe around each new note (same duck_inv as the send)
+    p.sig("ret_duck_l", "*~ 1.", 2)
+    p.sig("ret_duck_r", "*~ 1.", 2)
     p.sig("dry_sub", "+~", 2)
     p.sig("sum_l", "+~", 2)
     p.sig("sum_r", "+~", 2)
-    p.sig("trim_l", "*~ 0.8", 2)
-    p.sig("trim_r", "*~ 0.8", 2)
+    p.sig("trim_l", "*~ 0.75", 2)
+    p.sig("trim_r", "*~ 0.75", 2)
     p.sig("plugout", "plugout~", 2, numoutlets=2)
     p.obj("midiin", "midiin", numinlets=1, numoutlets=1, outlettype=["int"])
     p.connect("gain_mul", 0, "dry_sub", 0)
     p.connect("sub_mul", 0, "dry_sub", 1)
+    p.connect("tapout", 0, "ret_duck_l", 0)
+    p.connect("duck_inv", 0, "ret_duck_l", 1)
+    p.connect("tapout", 1, "ret_duck_r", 0)
+    p.connect("duck_inv", 0, "ret_duck_r", 1)
     p.connect("dry_sub", 0, "sum_l", 0)
-    p.connect("tapout", 0, "sum_l", 1)
+    p.connect("ret_duck_l", 0, "sum_l", 1)
     p.connect("dry_sub", 0, "sum_r", 0)
-    p.connect("tapout", 1, "sum_r", 1)
+    p.connect("ret_duck_r", 0, "sum_r", 1)
     p.connect("sum_l", 0, "trim_l", 0)
     p.connect("sum_r", 0, "trim_r", 0)
     p.connect("trim_l", 0, "plugout", 0)

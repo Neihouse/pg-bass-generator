@@ -6,7 +6,9 @@ A Max for Live instrument for Ableton Live that generates novel, stylistically c
 
 ## Status
 
-**v0.1 built.** The generative core, synth engine, and device patch are implemented and tested (19/19 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
+**v0.2 built.** The generative core, synth engine, and device patch are implemented and tested (20/20 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
+
+v0.2 is the low-end voicing pass: the register grammar was tightened toward the root (80/20 anchor rule, phrase-start grounding, leap resets), the filter now closes to a genuinely bassy floor after each squelch sweep, the sub oscillator is folded into a fixed 32.7–61.7 Hz window and lightly saturated so it reads on small speakers, and the wet network is high-passed at 500 Hz and ducked by the dry envelope so effects never cloud the fundamental.
 
 ## Loading the device
 
@@ -25,10 +27,10 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 | **Chunk** | Shorter/punchier amp envelope and gates vs. longer, rounder notes. |
 | **Squelch** | Filter resonance + filter-envelope depth (the 303 acid character). |
 | **Drive** | Pre/post saturation amount. |
-| **Cutoff** | Base filter cutoff (55 Hz – ~6.8 kHz exponential). |
-| **Decay** | Filter envelope decay time. |
-| **Sub** | Independent sub-oscillator level (sine, −12 st). |
-| **Wet** | Frequency-split wet send (HP'd delay/feedback network, ducked by the amp envelope, low end stays dry/mono). |
+| **Cutoff** | Base filter cutoff (~45 Hz – ~3.3 kHz exponential — voiced so the filter always settles back into bass territory). |
+| **Decay** | Filter envelope decay time (squelch resolves inside a 16th at typical settings). |
+| **Sub** | Sub-oscillator level (saturated sine, octave-folded into a fixed 32.7–61.7 Hz window under every note; 0.45 floor). |
+| **Wet** | Frequency-split wet send (delay/feedback network high-passed at 500 Hz, return ducked by the dry amp envelope; low end stays dry/mono). |
 | **Groove** | 7 groove states (weights for density/offbeats/gates/accents/slides/swing/contours). |
 | **Root** | Root note (C–B, register C1–C3 by default). |
 | **Length** | Phrase length: 1 / 2 / 4 bars. |
@@ -60,7 +62,7 @@ python3 scripts/build_device.py
 
 - Max for Live instrument device (MIDI in → audio out)
 - Legacy `js` (ES5) for the generative core — `js pg-core.js`, three outlets: synth params / note events / display
-- Plain MSP objects for the synth: saw+rect → drive → `tanh~` → `svf~` (resonant LPF with envelope + squelch mapping) → post-saturation, independent sub sine, HP'd wet delay network with envelope ducking
+- Plain MSP objects for the synth: saw+rect (0.6/0.45 mix) → drive → `tanh~` → `svf~` (resonant LPF with envelope + squelch mapping) → post-saturation; independent octave-folded sub sine through its own `tanh~` saturator; wet delay network high-passed at 500 Hz with the return ducked by the dry envelope
 - `live.*` parameters (13 total, 2 banks) for automation and Push mapping
 - Transport-synced clock: `metro 16n @quantize 16n` + `transport` position → JS phase correction
 

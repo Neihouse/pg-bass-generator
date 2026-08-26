@@ -16,14 +16,15 @@ var TICKS_PER_STEP = 120; // 480 ppq / 4
 var BUDGET = { pitch: 0.25, rhythm: 0.25, accent: 0.15, slide: 0.10, timbre: 0.15, wet: 0.10 };
 
 // §1.6 tonal gravity: semitones above root -> attractor weight (2-octave field)
+// §1.5 root octave = C1: the second octave is rare color, not structure
 var GRAVITY = {
-  0: 1.0, 12: 0.5, 24: 0.42,      // root / octaves
-  7: 0.6, 19: 0.45,               // fifths
-  10: 0.35, 22: 0.28,             // minor 7ths
-  3: 0.2, 15: 0.16,               // minor 3rds
-  5: 0.18, 17: 0.14,              // 4ths
-  2: 0.12, 14: 0.10,              // 2nds (passing)
-  8: 0.12, 20: 0.10               // b6 (passing)
+  0: 1.0, 12: 0.45, 24: 0.08,     // root / octaves
+  7: 0.6, 19: 0.20,               // fifths
+  10: 0.35, 22: 0.08,             // minor 7ths
+  3: 0.2, 15: 0.06,               // minor 3rds
+  5: 0.18, 17: 0.05,              // 4ths
+  2: 0.12, 14: 0.04,              // 2nds (passing)
+  8: 0.12, 20: 0.04               // b6 (passing)
 };
 var ANCHOR = { 0: 1, 7: 1, 10: 1, 12: 1, 19: 1, 22: 1, 24: 1 }; // §1.5
 
@@ -158,9 +159,9 @@ function genRhythm(rng, bars, dens, off) {
 // §1.7 contour grammar: target offset (semitones above root) for onset k of m
 function contourTarget(type, k, m) {
   var t = m > 1 ? k / (m - 1) : 0;
-  if (type === "ascending") return 2 + t * 8;
-  if (type === "descending") return 10 - t * 10;
-  if (type === "arch") return Math.sin(Math.PI * t) * 9;
+  if (type === "ascending") return 2 + t * 5;
+  if (type === "descending") return 7 - t * 7;
+  if (type === "arch") return Math.sin(Math.PI * t) * 7;
   if (type === "pedal") return (k % 4 === 3) ? 7 : 0;
   if (type === "leaprtn") return (k % 4 === 2) ? 12 : 0;
   if (type === "neighbor") return (k % 2) * 2;
@@ -196,7 +197,8 @@ function pickPitch(rng, root, prev, target, isFirst, isFinal, contour) {
       else w *= 0.03; // max interval jump
     }
     if (isFinal && ANCHOR[semis]) w *= 2.2; // phrase endings resolve to anchors
-    if (isFirst && (semis === 0 || semis === 12)) w *= 3;
+    if (isFirst && semis === 0) w *= 3.5;   // §1.5 phrases open grounded on the root
+    if (prev >= 0 && prev - root >= 10 && semis <= 5) w *= 1.6; // §1.5 register reset after a leap
     weights.push(w); pitches.push(pitch); total += w;
   }
   var r = rng() * total;
@@ -218,11 +220,11 @@ function genPitches(rng, p) {
     pitches[ons[k]] = pitch;
     prev = pitch;
   }
-  // §1.5: enforce ~80/20 anchor vs passing tones
+  // §1.5: enforce 80/20 anchor vs passing tones
   var anchors = 0;
   for (k = 0; k < ons.length; k++) if (ANCHOR[pitches[ons[k]] - P.root]) anchors++;
   k = 0;
-  while (ons.length > 0 && anchors / ons.length < 0.7 && k < ons.length) {
+  while (ons.length > 0 && anchors / ons.length < 0.8 && k < ons.length) {
     var idx = ons[Math.floor(rng() * ons.length)];
     if (!ANCHOR[pitches[idx] - P.root]) {
       var semi = pitches[idx] - P.root;
@@ -433,19 +435,22 @@ function barBoundary() {
 // ---------------------------------------------------------------- synth coupling (§2 / §5.1)
 
 function pushSynth() {
-  var cutoffHz = 55 * Math.pow(2, P.cutoff * 6.8) * (1 + slow.cut);
+  // voicing note: the filter sustains near ~311 Hz at default cutoff and the
+  // envelope sweeps ~1.2 kHz above it — the squelch rides ON TOP of a solid
+  // fundamental instead of parking every note in the midrange.
+  var cutoffHz = 45 * Math.pow(2, P.cutoff * 6.2) * (1 + slow.cut);
   var reso = clamp(0.06 + P.squelch * 0.68 + slow.res, 0, 0.92);
-  var envd = 250 + Math.pow(P.squelch, 1.2) * 4800;
-  var drv = (0.8 + P.drive * 6.5) * (1 + med.drv);
+  var envd = 180 + Math.pow(P.squelch, 1.4) * 2800;
+  var drv = (0.7 + P.drive * 2.6) * (1 + med.drv);
   outlet(0, "cutoff", cutoffHz, 30);
   outlet(0, "reso", reso);
   outlet(0, "envd", envd, 30);
   outlet(0, "drv", drv, 30);
-  outlet(0, "post", 1 + P.drive * 1.6);
+  outlet(0, "post", 1 + P.drive * 0.8);
   outlet(0, "gain", 0.5 * (1 + reso * 0.6)); // §2.2 resonance gain compensation
   outlet(0, "adec", lerp(430, 120, P.chunk) * (1 + med.dec * 0.5));
   outlet(0, "asus", lerp(0.5, 0.12, P.chunk));
-  outlet(0, "sub", P.sub * 0.95);
+  outlet(0, "sub", 0.45 + P.sub * 0.55); // §2.2: floor keeps low-end energy at any Sub setting
   outlet(0, "wet", Math.pow(P.wet, 1.25), 60);
   outlet(0, "duck", 0.45 + 0.4 * P.wet);
   outlet(0, "fb", 0.28 + P.wet * 0.22);
@@ -458,7 +463,8 @@ function pushDelays() {
 }
 
 function fdecBase() {
-  return (60 + Math.pow(P.decay, 1.5) * 820) * (1 + med.dec);
+  // short enough that the squelch resolves inside a 16th at default Decay
+  return (40 + Math.pow(P.decay, 1.5) * 520) * (1 + med.dec);
 }
 
 // ---------------------------------------------------------------- playback
@@ -487,6 +493,12 @@ function fireStep(s) {
   outlet(1, "fmul", (acc ? 1.55 : 1.0) * (1 + p.timbres[s] * 0.4));
   outlet(1, "dmul", (acc ? 1.35 : 1.0) * (1 + (p.vels[s] / 127) * 0.2));
   outlet(1, "pitch", p.pitches[s], glide);
+  // §2.2 sub reinforcement + §2.5: sub pitch folded into 32.7–61.7 Hz (MIDI 24–35)
+  // so every note — including octave/fifth excursions — carries a true sub fundamental
+  var sp = p.pitches[s] - 12;
+  while (sp > 35) sp -= 12;
+  while (sp < 24) sp += 12;
+  outlet(1, "spitch", sp, glide);
   if (!tie) outlet(1, "trig", p.vels[s] / 127); // slide = glide without retrigger
   noteOn = true;
 

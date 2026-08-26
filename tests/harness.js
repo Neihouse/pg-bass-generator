@@ -362,6 +362,44 @@ test("delay times follow tempo", function () {
   assert(Math.abs(last - 300) < 30, "dotted-8th tap should be ~300ms at 100ms steps, got " + last);
 });
 
+test("register distribution: root-dominant, sub always 32.7-61.7 Hz", function () {
+  var atRoot = 0, withinFifth = 0, aboveOctave = 0, total = 0;
+  for (var g = 0; g < 7; g++) {
+    var sb = makeSandbox();
+    call(sb, "groove", g);
+    for (var m = 0; m < 6; m++) call(sb, "Mutate");
+    tickSteps(sb, 64);
+    collect(sb, 1, "pitch").forEach(function (p) {
+      var semi = p[1] - 36; total++;
+      if (semi === 0) atRoot++;
+      if (semi <= 7) withinFifth++;
+      if (semi > 12) aboveOctave++;
+    });
+    collect(sb, 1, "spitch").forEach(function (s) {
+      assert(s[1] >= 24 && s[1] <= 35, "sub pitch outside 32.7-61.7 Hz window: " + s[1]);
+    });
+  }
+  assert(total >= 50, "too few notes sampled: " + total);
+  assert(atRoot / total >= 0.5, "root share fell below 50%: " + (atRoot / total).toFixed(2));
+  assert(withinFifth / total >= 0.8, "within-a-fifth share below 80%: " + (withinFifth / total).toFixed(2));
+  assert(aboveOctave / total <= 0.05, "above-octave share exceeds 5%: " + (aboveOctave / total).toFixed(2));
+
+  // extreme root: B (MIDI 47) exercises the sub fold's multi-subtraction path
+  var sbb = makeSandbox();
+  call(sbb, "root", 11);
+  for (var m2 = 0; m2 < 4; m2++) call(sbb, "Mutate");
+  tickSteps(sbb, 64);
+  var hi = collect(sbb, 1, "pitch");
+  assert(hi.length >= 8, "root-11 run produced too few notes: " + hi.length);
+  hi.forEach(function (p) {
+    var semi = p[1] - 47;
+    assert(semi >= 0 && semi <= 24, "pitch outside root-11 register: " + p[1]);
+  });
+  collect(sbb, 1, "spitch").forEach(function (s) {
+    assert(s[1] >= 24 && s[1] <= 35, "root-11 sub pitch outside window: " + s[1]);
+  });
+});
+
 // ----------------------------------------------------------------
 
 console.log("\n" + passed + " passed, " + failures + " failed");
