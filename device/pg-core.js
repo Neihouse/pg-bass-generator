@@ -32,30 +32,38 @@ var ANCHOR = { 0: 1, 7: 1, 10: 1, 12: 1, 19: 1, 22: 1, 24: 1 }; // §1.5
 var CONTOURS = ["repeat", "pedal", "neighbor", "arch", "ascending", "descending", "leaprtn"];
 
 // §1.10 groove states — each moves many parameters together.
-// push = how far the groove leans forward (fraction of a step, applied as rush
-// on accents and drag on ghosts); pick = anticipation probability per downbeat;
-// bp  = lowpass/bandpass blend (§2.3); frz = probability of a repetition freeze.
+// push  = how far the groove leans forward (fraction of a step, applied as rush
+//         on accents and drag on ghosts); pick = anticipation probability per
+//         downbeat; bp = lowpass/bandpass blend (§2.3); frz = probability of a
+//         repetition freeze.
+// fam   = which rhythmic family (§1.3a) this groove draws its cells from.
+// motif = probability that beats 3-4 restate beats 1-2 within the bar.
 var GROOVES = [
   { name: "restrained", dens: 0.35, off: 0.20, gate: 0.50, acc: 0.15, sld: 0.08, mut: 0.4, swing: 0.02,
-    push: 0.025, pick: 0.12, bp: 0.00, frz: 0.20,
+    push: 0.025, pick: 0.12, bp: 0.00, frz: 0.20, fam: "deep", motif: 0.55,
     contours: { repeat: 3, pedal: 3, neighbor: 2, arch: 1, descending: 1 } },
-  { name: "rolling",    dens: 0.55, off: 0.75, gate: 0.45, acc: 0.30, sld: 0.15, mut: 0.5, swing: 0.07,
-    push: 0.050, pick: 0.35, bp: 0.05, frz: 0.18,
+  // rolling and syncopated share the psy vocabulary and are separated by how
+  // they sit against the kick: rolling rides with it, syncopated answers it
+  { name: "rolling",    dens: 0.55, off: 0.62, gate: 0.45, acc: 0.30, sld: 0.15, mut: 0.5, swing: 0.07,
+    push: 0.050, pick: 0.35, bp: 0.05, frz: 0.18, fam: "psy", motif: 0.70, kick: 0.63,
     contours: { repeat: 3, pedal: 2, leaprtn: 2, arch: 1, neighbor: 1 } },
-  { name: "syncopated", dens: 0.55, off: 0.85, gate: 0.55, acc: 0.45, sld: 0.25, mut: 0.9, swing: 0.10,
-    push: 0.045, pick: 0.45, bp: 0.15, frz: 0.10,
+  { name: "syncopated", dens: 0.55, off: 0.92, gate: 0.55, acc: 0.45, sld: 0.25, mut: 0.9, swing: 0.10,
+    push: 0.045, pick: 0.45, bp: 0.15, frz: 0.10, fam: "psy", motif: 0.55, kick: 0.37,
     contours: { neighbor: 2, leaprtn: 2, arch: 2, repeat: 1, ascending: 1 } },
   { name: "driving",    dens: 0.80, off: 0.25, gate: 0.60, acc: 0.50, sld: 0.12, mut: 0.5, swing: 0.03,
-    push: 0.080, pick: 0.25, bp: 0.05, frz: 0.22,
+    push: 0.080, pick: 0.25, bp: 0.05, frz: 0.22, fam: "deep", motif: 0.75,
     contours: { repeat: 3, pedal: 2, ascending: 1, descending: 1 } },
   { name: "acidic",     dens: 0.65, off: 0.55, gate: 0.50, acc: 0.60, sld: 0.50, mut: 0.9, swing: 0.05,
-    push: 0.060, pick: 0.35, bp: 0.30, frz: 0.08,
+    push: 0.060, pick: 0.35, bp: 0.30, frz: 0.08, fam: "acid", motif: 0.80,
     contours: { leaprtn: 3, neighbor: 2, ascending: 2, arch: 1, repeat: 1 } },
   { name: "broken",     dens: 0.50, off: 0.60, gate: 0.55, acc: 0.55, sld: 0.25, mut: 1.3, swing: 0.09,
-    push: 0.035, pick: 0.50, bp: 0.20, frz: 0.06,
+    push: 0.035, pick: 0.50, bp: 0.20, frz: 0.06, fam: "broken", motif: 0.30,
     contours: { arch: 2, leaprtn: 2, descending: 2, neighbor: 1, ascending: 1 } },
-  { name: "hypnotic",   dens: 0.55, off: 0.50, gate: 0.40, acc: 0.12, sld: 0.10, mut: 0.15, swing: 0.04,
-    push: 0.018, pick: 0.15, bp: 0.00, frz: 0.35,
+  // hypnotic shares rolling's psy vocabulary; what separates them is that it says
+  // less and changes less — sparser cells, a near-certain two-beat motif, and the
+  // lowest mutation rate of any groove
+  { name: "hypnotic",   dens: 0.45, off: 0.42, gate: 0.40, acc: 0.12, sld: 0.10, mut: 0.15, swing: 0.04,
+    push: 0.018, pick: 0.15, bp: 0.00, frz: 0.35, fam: "psy", motif: 0.85,
     contours: { repeat: 4, pedal: 3, neighbor: 1 } }
 ];
 
@@ -144,7 +152,7 @@ function grooveNow() { return GROOVES[P.groove] || GROOVES[1]; }
 function clonePhrase(p) {
   return {
     id: p.id, parentId: p.parentId, generation: p.generation,
-    letter: p.letter, seed: p.seed, bars: p.bars, contour: p.contour,
+    letter: p.letter, seed: p.seed, bars: p.bars, contour: p.contour, form: p.form,
     onsets: p.onsets.slice(), gates: p.gates.slice(), pitches: p.pitches.slice(),
     accents: p.accents.slice(), slides: p.slides.slice(), probs: p.probs.slice(),
     timbres: p.timbres.slice(), wets: p.wets.slice(), micros: p.micros.slice(),
@@ -165,27 +173,214 @@ function rememberPhrase(p) { // §1.2
 
 // ---------------------------------------------------------------- generation
 
-// §1.3 hierarchical timing + §1.4 rest logic
-function genRhythm(rng, bars, dens, off) {
-  var n = bars * STEPS_PER_BAR;
-  var onsets = [];
-  var consec = 0;
-  for (var s = 0; s < n; s++) {
-    var barPos = s % STEPS_PER_BAR;
-    var beatPos = s % 4;
-    var p;
-    if (barPos === 0) p = clamp(dens * 2.2 + 0.25, 0, 0.97);          // the one
-    else if (beatPos === 0) p = dens * 1.3;                            // quarter beats
-    else if (beatPos === 2) p = dens * (0.55 + off * 1.2);             // 8th offbeats
-    else p = dens * (0.22 + off * 0.9);                                // 16th offbeats
-    if (s >= n - 2) p *= 0.45;                                         // phrase-end silence bias
-    if (consec >= 6) p = 0;                                            // max consecutive notes
-    if (rng() < clamp(p, 0, 0.97)) { onsets[s] = true; consec++; }
-    else { onsets[s] = false; consec = 0; }
+// ---------------------------------------------------------------- rhythm (§1.3 / §1.4)
+//
+// The target idiom is Maccabi House / psychedelic indie dance — Adam Ten, Mita
+// Gami, Rafael, Yamagucci and adjacent records — not generic four-on-the-floor
+// house. That music is hypnotic because a small recognizable machine states
+// itself and then changes almost imperceptibly, which means randomness destroys
+// the exact thing that makes it work.
+//
+// So the rhythm is built the way the style is: a bar is assembled from a
+// vocabulary of one-beat cells, and the phrase repeats that bar and varies it.
+// The generator this replaced flipped an independent weighted coin per step,
+// which measured at a 0.1% bar-repeat rate and used all 16 possible cells at
+// near-uniform entropy — technically competent, and with no motif to remember.
+
+// One-beat (4-step) cells as bit patterns: bit 0 is the beat, bit 1 the "e",
+// bit 2 the "&", bit 3 the "a". So 13 = 0b1101 = "x.xx", the rolling 16th push.
+
+// §1.3a rhythmic families. Each groove belongs to one. The family is what makes
+// "syncopated" and "rolling" genuinely different ideas rather than the same
+// generator with different scalars; kick = how willingly the family lands with
+// the kick rather than answering it, on a 0..1 scale where 0.5 is neutral, 1
+// locks to the quarter and 0 avoids it. It reads as odds, not as a multiplier
+// (see pickCell), so it is not linear in the resulting downbeat rate.
+var FAMILIES = {
+  // rolling 16th pushes, offbeat 8ths, dotted 3-step movement, sparse
+  // syncopated stabs, late-beat anticipations
+  psy: { kick: 0.55,
+    cells: { 5: 10, 13: 9, 12: 7, 9: 7, 4: 6, 1: 5, 8: 4, 11: 3,
+             6: 3, 3: 2, 15: 2, 0: 2, 10: 2, 7: 2 } },
+  // simpler offbeats, root-quarter figures, fewer 16ths
+  deep: { kick: 0.60,
+    cells: { 1: 10, 5: 8, 4: 6, 0: 5, 9: 3, 3: 2, 13: 2, 12: 2, 7: 1, 11: 1, 15: 1 } },
+  // repetitive 16th cells; this family mutates through pitch and filter, not onsets
+  acid: { kick: 0.50,
+    cells: { 15: 9, 13: 8, 5: 7, 7: 6, 11: 6, 1: 4, 9: 4, 14: 3, 3: 3, 12: 2 } },
+  // displaced cells, more silence, weak four-on-the-floor dependency — weak, not
+  // absent: the downbeat still has to arrive often enough to be worth displacing
+  broken: { kick: 0.42,
+    cells: { 0: 5, 12: 6, 8: 6, 6: 6, 10: 5, 4: 5, 2: 3, 14: 3, 9: 5, 5: 4, 1: 5, 11: 3 } }
+};
+
+// §1.3b bar form. Heavily biased toward one bar restating itself, because this
+// idiom lives on motif identity and groove persistence rather than on four
+// independently interesting bars. Roles: 0 = A verbatim, 1 = A' (one small
+// change), 2 = B (a derived bar, still built from A).
+var FORMS = {
+  1: [{ name: "A", roles: [0], w: 1 }],
+  2: [{ name: "AA", roles: [0, 0], w: 3 },
+      { name: "AA'", roles: [0, 1], w: 5 },
+      { name: "AB", roles: [0, 2], w: 2 }],
+  4: [{ name: "AAAA'", roles: [0, 0, 0, 1], w: 5 },
+      { name: "AAAB'", roles: [0, 0, 0, 2], w: 5 },
+      { name: "AABA'", roles: [0, 0, 2, 1], w: 4 },
+      { name: "AA'AA''", roles: [0, 1, 0, 1], w: 3 },
+      { name: "ABAB'", roles: [0, 2, 0, 2], w: 1 }]
+};
+
+function popcount4(c) { return (c & 1) + ((c >> 1) & 1) + ((c >> 2) & 1) + ((c >> 3) & 1); }
+
+function offness(c) { // how much of the cell sits off the beat — what "off" means
+  var n = popcount4(c);
+  return n === 0 ? 0.5 : (n - (c & 1)) / n;
+}
+
+function barCells(onsets, bar) { // read a bar back out as four cells
+  var cells = [];
+  for (var c = 0; c < 4; c++) {
+    var v = 0;
+    for (var k = 0; k < 4; k++) if (onsets[bar * STEPS_PER_BAR + c * 4 + k]) v |= (1 << k);
+    cells[c] = v;
+  }
+  return cells;
+}
+
+function writeCells(onsets, bar, cells) {
+  for (var c = 0; c < 4; c++) {
+    for (var k = 0; k < 4; k++) {
+      onsets[bar * STEPS_PER_BAR + c * 4 + k] = (cells[c] & (1 << k)) !== 0;
+    }
+  }
+}
+
+// Density selects *denser cells* rather than raising every step's coin, so a
+// high Density reads as a busier figure instead of 16th-note mush.
+function pickCell(rng, fam, dens, off, beat, kick) {
+  var target = clamp(dens * 4, 0, 4);            // wanted onsets within this beat
+  var pool = [], weights = [], total = 0, key;
+  for (key in fam.cells) {
+    var c = parseInt(key, 10);
+    // the family preference is raised to a power: without it the density term
+    // spreads weight evenly across every cell of the right size, and the family
+    // stops being a vocabulary
+    var w = Math.pow(fam.cells[key], 1.35);
+    w *= gauss(popcount4(c) - target, 0.95);
+    w *= 0.35 + 1.3 * (off * offness(c) + (1 - off) * (1 - offness(c)));
+    // kick interlock: the kick is on all four quarters, but 1 and 3 carry it,
+    // so whether the bass lands with it or answers it is a family trait rather
+    // than a coin flip. kick is an odds exponent, not a multiplier — as a plain
+    // multiplier, kick/(2-kick), the value 1.0 came out exactly neutral and the
+    // two families that are meant to lock hardest to the kick got no bias at all.
+    var lean = (2 * kick - 1) * (beat % 2 === 0 ? 1 : 0.5);
+    w *= Math.pow(6, (c & 1) ? lean : -lean);
+    if (w <= 0) continue;
+    pool.push(c); weights.push(w); total += w;
+  }
+  if (!total) return 1;
+  var r = rng() * total;
+  for (var i = 0; i < pool.length; i++) { r -= weights[i]; if (r <= 0) return pool[i]; }
+  return pool[pool.length - 1];
+}
+
+// §1.3a one bar, with a two-beat motif repeat — the repeated two-beat figure is
+// the signature of this vocabulary.
+function genBar(rng, fam, dens, off, kick, motifP) {
+  var cells = [pickCell(rng, fam, dens, off, 0, kick),
+               pickCell(rng, fam, dens, off, 1, kick)];
+  if (rng() < motifP) {                          // beats 3-4 restate beats 1-2
+    cells[2] = cells[0];
+    cells[3] = cells[1];
+  } else {
+    cells[2] = pickCell(rng, fam, dens, off, 2, kick);
+    cells[3] = pickCell(rng, fam, dens, off, 3, kick);
+  }
+  // the bar has to start somewhere the ear can find it; a wholly empty first
+  // beat belongs to broken, which is defined by exactly that
+  if (!cells[0] && kick > 0.7) cells[0] = 1;
+  return cells;
+}
+
+// §1.3b variation: A' has to still be A. A small change lands on the last beat,
+// where the ear already expects the turnaround, so the motif survives it.
+function varyCells(rng, cells, fam, dens, off, kick, strength) {
+  var out = cells.slice();
+  var ops = strength >= 2 ? 2 : 1;
+  for (var i = 0; i < ops; i++) {
+    var beat = strength >= 2 ? Math.floor(rng() * 4) : (rng() < 0.75 ? 3 : 2);
+    var r = rng();
+    if (r < 0.4) {
+      out[beat] = pickCell(rng, fam, dens, off, beat, kick);    // swap the cell
+    } else if (r < 0.7) {
+      out[beat] = out[beat] | (1 << Math.floor(rng() * 4));     // add a 16th
+    } else if (r < 0.9) {
+      var bits = [];
+      for (var b = 0; b < 4; b++) if (out[beat] & (1 << b)) bits.push(b);
+      if (bits.length > 1) out[beat] &= ~(1 << bits[Math.floor(rng() * bits.length)]);
+    } else {
+      out[beat] = ((out[beat] << 1) | (out[beat] >> 3)) & 15;   // displace the cell
+    }
+  }
+  return out;
+}
+
+function pickForm(rng, bars) {
+  var list = FORMS[bars] || FORMS[2];
+  var total = 0, i;
+  for (i = 0; i < list.length; i++) total += list[i].w;
+  var r = rng() * total;
+  for (i = 0; i < list.length; i++) { r -= list[i].w; if (r <= 0) return list[i]; }
+  return list[0];
+}
+
+// §1.4 rest logic — the two hard guards the cell bank can still walk into.
+function repairRhythm(onsets) {
+  var n = onsets.length, s, run = 0;
+  for (s = 0; s < n; s++) {
+    if (!onsets[s]) { run = 0; continue; }
+    if (++run > 6) { onsets[s] = false; run = 0; }        // max consecutive notes
   }
   var count = 0;
   for (s = 0; s < n; s++) if (onsets[s]) count++;
-  if (count < 2) { onsets[0] = true; onsets[8] = true; }               // never fully silent
+  if (count < 2) { onsets[0] = true; onsets[8] = true; }  // never fully silent
+  return onsets;
+}
+
+function layOutForm(rng, bars, form, A, fam, dens, off, kick) {
+  var onsets = [];
+  for (var b = 0; b < bars; b++) {
+    var role = form.roles[b % form.roles.length];
+    writeCells(onsets, b, role === 0 ? A : varyCells(rng, A, fam, dens, off, kick, role));
+  }
+  return repairRhythm(onsets);
+}
+
+// a groove may override its family's kick affinity — that is what separates two
+// grooves drawing from the same vocabulary
+function famOf(groove) { return FAMILIES[groove.fam] || FAMILIES.psy; }
+function kickOf(groove) {
+  return typeof groove.kick === "number" ? groove.kick : famOf(groove).kick;
+}
+
+function genRhythm(rng, bars, dens, groove) {
+  var fam = famOf(groove), kick = kickOf(groove);
+  var form = pickForm(rng, bars);
+  var A = genBar(rng, fam, dens, groove.off, kick, groove.motif);
+  var onsets = layOutForm(rng, bars, form, A, fam, dens, groove.off, kick);
+  onsets.form = form.name;      // for the dump/display; not part of the step data
+  return onsets;
+}
+
+// §4.3 a medium mutation should sound like the same machine drifting rather than
+// a new one, so it varies the phrase's own opening bar instead of drawing a
+// fresh figure. This is what "changes almost imperceptibly" has to mean in code.
+function mutateRhythm(rng, p, groove, dens) {
+  var fam = famOf(groove), kick = kickOf(groove);
+  var form = pickForm(rng, p.bars);
+  var A = varyCells(rng, barCells(p.onsets, 0), fam, dens, groove.off, kick, 1);
+  var onsets = layOutForm(rng, p.bars, form, A, fam, dens, groove.off, kick);
+  onsets.form = form.name;
   return onsets;
 }
 
@@ -380,7 +575,8 @@ function generatePhrase(seed, parent) {
     seed: seed, bars: P.bars,
     contour: pickContour(rng, groove)
   };
-  p.onsets = genRhythm(rng, P.bars, dens, groove.off);
+  p.onsets = genRhythm(rng, P.bars, dens, groove);
+  p.form = p.onsets.form;
   p.pitches = genPitches(rng, p);
   p.accents = genAccents(rng, p, groove);
   p.slides = genSlides(rng, p, groove, dens);
@@ -432,7 +628,8 @@ function mutatePhrase(parent, novelty) {
   } else {
     // medium: preserve contour; alter rhythm density; alter slide placement
     var dens = clamp(groove.dens * (0.4 + P.density * 1.4) * (1 + (rng() - 0.5) * alloc.rhythm * 0.5), 0.05, 0.95);
-    child.onsets = genRhythm(rng, child.bars, dens, groove.off);
+    child.onsets = mutateRhythm(rng, child, groove, dens); // vary the motif, don't replace it
+    child.form = child.onsets.form;
     child.pitches = genPitches(rng, child);       // same contour type = preserved identity
     child.accents = genAccents(rng, child, groove);
     child.slides = genSlides(rng, child, groove, dens);
@@ -902,7 +1099,8 @@ function Rhythm() { // §5.3 regenerate one layer only: rhythm
   var oldPitchSeq = [];
   var ons = onsetList(phrase), k;
   for (k = 0; k < ons.length; k++) oldPitchSeq.push(phrase.pitches[ons[k]]);
-  phrase.onsets = genRhythm(rng, phrase.bars, dens, groove.off);
+  phrase.onsets = genRhythm(rng, phrase.bars, dens, groove); // the button asks for a new figure
+  phrase.form = phrase.onsets.form;
   ons = onsetList(phrase);
   phrase.pitches = [];
   for (k = 0; k < ons.length; k++) {
@@ -1023,6 +1221,7 @@ function dump() { // debug/test hook: full state snapshot on outlet 2
     phrase: phrase ? {
       id: phrase.id, parentId: phrase.parentId, generation: phrase.generation,
       name: phraseName(phrase), seed: phrase.seed, bars: phrase.bars, contour: phrase.contour,
+      form: phrase.form,
       onsets: phrase.onsets, pitches: phrase.pitches, accents: phrase.accents,
       slides: phrase.slides, gates: phrase.gates, vels: phrase.vels,
       probs: phrase.probs, timbres: phrase.timbres, wets: phrase.wets, micros: phrase.micros

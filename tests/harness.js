@@ -197,6 +197,132 @@ test("accents capped near 35% of onsets", function () {
   assert(accents / onsets <= 0.45, "accent ratio too high: " + (accents / onsets).toFixed(2));
 });
 
+// ---------------------------------------------------------------- rhythm (§1.3)
+//
+// The idiom these assert is Maccabi House / psychedelic indie dance: a small
+// recognizable figure states itself and then changes almost imperceptibly. The
+// generator this replaced flipped an independent weighted coin per step, and it
+// would still pass every other test in this file — so the properties that make
+// the rhythm a *motif* rather than a distribution have to be asserted directly.
+
+// draw one phrase per call with a decorrelated seed. Reseed takes its seed from
+// the fake clock, so the clock has to move between samples.
+function samplePhrase(g, i, opts) {
+  var sb = makeSandbox();
+  sb.__state.now += 613 * (i + 1);
+  call(sb, "groove", g);
+  if (opts && opts.plen !== undefined) call(sb, "plen", opts.plen);
+  if (opts && opts.density !== undefined) call(sb, "density", opts.density);
+  if (opts && opts.novelty !== undefined) call(sb, "novelty", opts.novelty);
+  call(sb, "Reseed");
+  if (opts && opts.mutate) for (var m = 0; m < opts.mutate; m++) call(sb, "Mutate");
+  call(sb, "dump");
+  return { sb: sb, phrase: lastDump(sb).phrase };
+}
+
+function barHamming(onsets, a, b) {
+  var h = 0;
+  for (var s = 0; s < 16; s++) if (!!onsets[a * 16 + s] !== !!onsets[b * 16 + s]) h++;
+  return h;
+}
+
+test("a phrase restates its opening bar instead of redrawing every bar", function () {
+  var same = 0, pairs = 0, ham = 0;
+  for (var g = 0; g < 7; g++) {
+    for (var t = 0; t < 12; t++) {
+      var p = samplePhrase(g, g * 12 + t, { plen: 2 }).phrase;
+      assert(p.bars === 4, "expected a 4-bar phrase, got " + p.bars);
+      for (var b = 1; b < 4; b++) {
+        pairs++;
+        var h = barHamming(p.onsets, b, b - 1);
+        ham += h;
+        if (h === 0) same++;
+      }
+    }
+  }
+  // the coin-flip generator this replaced measured 0.1% identical and ~6 of 16
+  assert(same / pairs > 0.30,
+    "only " + (same / pairs * 100).toFixed(0) + "% of adjacent bars are identical — no motif");
+  assert(ham / pairs < 3,
+    "adjacent bars differ by " + (ham / pairs).toFixed(1) + " of 16 steps — too much churn");
+});
+
+test("bar form favours restatement over four independent bars", function () {
+  var forms = {}, n = 0;
+  for (var g = 0; g < 7; g++) {
+    for (var t = 0; t < 12; t++) {
+      var f = samplePhrase(g, 1000 + g * 12 + t, { plen: 2 }).phrase.form;
+      assert(f, "phrase has no bar form");
+      forms[f] = (forms[f] || 0) + 1;
+      n++;
+    }
+  }
+  var restating = (forms["AAAA'"] || 0) + (forms["AAAB'"] || 0) + (forms["AABA'"] || 0);
+  assert(restating / n > 0.5, "restating forms only " + (restating / n * 100).toFixed(0) + "% of phrases");
+  var distinct = 0;
+  for (var k in forms) distinct++;
+  assert(distinct >= 3, "only " + distinct + " distinct bar form(s) ever chosen");
+});
+
+test("rhythmic families place the bass differently against the kick", function () {
+  function quarterRate(g) {
+    var hit = 0, n = 0;
+    for (var t = 0; t < 24; t++) {
+      var p = samplePhrase(g, 2000 + g * 24 + t, { plen: 2 }).phrase;
+      for (var b = 0; b < p.bars; b++) {
+        for (var q = 0; q < 4; q++) { n++; if (p.onsets[b * 16 + q * 4]) hit++; }
+      }
+    }
+    return hit / n;
+  }
+  var driving = quarterRate(3);     // deep family: lands with the kick
+  var syncopated = quarterRate(2);  // psy, kick 0.37: answers it
+  var broken = quarterRate(5);      // broken family: displaced off it
+  assert(driving > 0.75, "driving lands on the quarter only " + driving.toFixed(2) + " of the time");
+  assert(broken < 0.45, "broken lands on the quarter " + broken.toFixed(2) + " — not displaced at all");
+  assert(driving - syncopated > 0.2,
+    "driving and syncopated sit the same way against the kick (" +
+    driving.toFixed(2) + " vs " + syncopated.toFixed(2) + ")");
+});
+
+test("a medium mutation varies the motif rather than replacing it", function () {
+  var ham = 0, n = 0, changed = 0;
+  for (var g = 0; g < 7; g++) {
+    for (var t = 0; t < 8; t++) {
+      var s = samplePhrase(g, 3000 + g * 8 + t, { novelty: 0.5 });
+      var before = s.phrase.onsets.slice();
+      call(s.sb, "Mutate");
+      call(s.sb, "dump");
+      var after = lastDump(s.sb).phrase.onsets;
+      var h = 0;
+      for (var i = 0; i < 16; i++) if (!!before[i] !== !!after[i]) h++;
+      ham += h; n++;
+      if (h > 0) changed++;
+    }
+  }
+  assert(ham / n < 5,
+    "a medium mutation moves " + (ham / n).toFixed(1) + " of 16 steps — that's a new figure, not a drift");
+  assert(changed > 0, "medium mutations never touched the rhythm at all");
+});
+
+test("Density scales the figure without turning it into 16th-note mush", function () {
+  function meanOnsets(d) {
+    var tot = 0, n = 0;
+    for (var g = 0; g < 7; g++) {
+      for (var t = 0; t < 8; t++) {
+        var p = samplePhrase(g, 4000 + g * 8 + t, { density: d }).phrase;
+        var c = 0;
+        for (var i = 0; i < 16; i++) if (p.onsets[i]) c++;
+        tot += c; n++;
+      }
+    }
+    return tot / n;
+  }
+  var lo = meanOnsets(0), hi = meanOnsets(1);
+  assert(hi > lo + 1.5, "Density barely moves note count: " + lo.toFixed(1) + " -> " + hi.toFixed(1));
+  assert(hi < 14, "full Density fills " + hi.toFixed(1) + " of 16 steps — that's mush, not a figure");
+});
+
 test("max 6 consecutive onsets (rest logic)", function () {
   for (var trial = 0; trial < 5; trial++) {
     var sb = makeSandbox();
@@ -538,7 +664,13 @@ test("pickups anticipate downbeats and tie into them", function () {
   for (var g = 0; g < 7; g++) {
     for (var r = 0; r < 6; r++) {
       var sb = makeSandbox();
+      // Reseed draws its seed from the fake clock, so the clock has to move or
+      // every sample in the sweep lands on the identical phrase. The rhythm
+      // generator makes one decision per beat rather than sixteen per bar, so a
+      // shared seed no longer decorrelates itself.
+      sb.__state.now += 977 * (g * 6 + r);
       call(sb, "groove", g);
+      call(sb, "Reseed");
       for (var m = 0; m < r; m++) call(sb, "Mutate");
       call(sb, "dump");
       var p = lastDump(sb).phrase;

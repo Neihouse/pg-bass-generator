@@ -1,14 +1,16 @@
 # PG Bass Generator
 
-A Max for Live instrument for Ableton Live that generates novel, stylistically coherent house basslines with a wet, chunky, squelchy bass synthesis engine.
+A Max for Live instrument for Ableton Live that generates novel, stylistically coherent basslines with a wet, chunky, squelchy bass synthesis engine. The rhythmic target is the Maccabi House / psychedelic indie-dance vocabulary — Adam Ten, Mita Gami, Rafael, Yamagucci and adjacent records — rather than generic four-on-the-floor house.
 
 **Design principle**: generate variation inside a bounded musical and sonic identity, preserving enough memory for novelty to remain legible.
 
 ## Status
 
-**v0.3 built.** The generative core, synth engine, and device patch are implemented and tested (30/30 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
+**v0.4 built.** The generative core, synth engine, and device patch are implemented and tested (38/38 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
 
-v0.3 is the persistence + character pass:
+v0.4 is the rhythm pass — see [Rhythm](#rhythm-the-motif-engine) below. The old rhythm generator flipped an independent weighted coin per step, which produced technically competent phrases with nothing to remember: measured over 600 phrases per groove, **0.1%** of adjacent bars were identical and adjacent bars differed by 5–7 of 16 steps. It now assembles bars from per-family vocabularies of one-beat cells and restates them: **50–58%** of adjacent bars are identical and the rest differ by about 1 step of 16.
+
+v0.3 was the persistence + character pass:
 
 - **State persistence.** A saved Live Set reopens with the bassline it was saved with. The whole working state — both RNG stream positions, the lineage counters, the chaos walks and every per-step layer — is flattened into one list and parked in a `pattr`, which Live saves with the set. Nothing regenerates on load: a restored phrase *is* the phrase, not a replay of its seed.
 - **Filter character (§2.3).** The filter is now an LP/BP blend with a saturating stage after it, so grooves can voice from round and closed to hollow and vocal; a resonance-tracking low shelf (§2.2) puts back the fundamental that high Squelch settings scoop out.
@@ -40,7 +42,7 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 | **Decay** | Filter envelope decay time (squelch resolves inside a 16th at typical settings). |
 | **Sub** | Sub-oscillator level (saturated sine, octave-folded into a fixed 32.7–61.7 Hz window under every note; 0.45 floor). |
 | **Wet** | Frequency-split wet send (delay/feedback network high-passed at 500 Hz, return ducked by the dry amp envelope; low end stays dry/mono). |
-| **Groove** | 7 groove states (weights for density/offbeats/gates/accents/slides/swing/contours). |
+| **Groove** | 7 groove states. Each selects a rhythmic family and a kick relationship, plus weights for density/offbeats/gates/accents/slides/swing/contours. |
 | **Root** | Root note (C–B, register C1–C3 by default). |
 | **Length** | Phrase length: 1 / 2 / 4 bars. |
 | **Lock** | Freeze the current phrase — no mutation at boundaries. |
@@ -52,7 +54,7 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 
 ## Development
 
-- `device/pg-core.js` — the entire generative core (phrase identity, memory/lineage, tonal gravity, contour grammar, accent hierarchy, slide logic, groove states, novelty budget, synth parameter mapping). Legacy `js` object, strict ES5.
+- `device/pg-core.js` — the entire generative core (phrase identity, memory/lineage, tonal gravity, contour grammar, rhythmic cell families and bar form, accent hierarchy, slide logic, groove states, novelty budget, synth parameter mapping). Legacy `js` object, strict ES5.
 - `scripts/build_device.py` — generates both devices programmatically (factory-accurate patcher JSON + verified `ampf`/`meta`/`ptch` chunk container). One `build(kind)` shares the UI, core, clock and persistence; `kind="instrument"` appends the synth and `plugout~` (`iiii`), `kind="midi"` appends `midiout` instead (`mmmm`).
 - `tests/harness.js` — Node test harness that sandboxes `pg-core.js` with a fake Max environment (Task scheduler, fake clock, outlet recorder).
 
@@ -83,6 +85,27 @@ To *record* the MIDI-effect build, Live needs a second track, because a track re
 3. Arm Track 2, set Monitor to **In**, and record.
 
 Slides are written as overlapping notes rather than held ones — that's what makes a mono synth downstream glide instead of retrigger, which is the same thing the tie does to our own voice.
+
+## Rhythm: the motif engine
+
+This music is hypnotic because a small recognizable machine states itself and then changes almost imperceptibly, which means randomness destroys the exact thing that makes it work. So the rhythm is built the way the style is, in four layers:
+
+**1. Cell vocabulary.** A bar is assembled from four one-beat cells, each a 4-bit pattern (bit 0 is the beat, bit 1 the "e", bit 2 the "&", bit 3 the "a" — so `13` is `x.xx`, the rolling 16th push). Density selects *denser cells* rather than raising every step's coin, so turning it up reads as a busier figure instead of 16th-note mush.
+
+**2. Rhythmic families.** The vocabulary is not universal — each groove draws from one of four banks, which is what makes "rolling" and "syncopated" genuinely different ideas rather than the same generator with different scalars:
+
+| Family | Character | Grooves |
+|---|---|---|
+| `psy` | rolling 16th pushes, offbeat 8ths, dotted 3-step movement, sparse syncopated stabs, late-beat anticipations | rolling, syncopated, hypnotic |
+| `deep` | simpler offbeats, root-quarter figures, fewer 16ths | restrained, driving |
+| `acid` | repetitive 16th cells; mutates through pitch and filter more than through onsets | acidic |
+| `broken` | displaced cells, more silence, weak four-on-the-floor dependency | broken |
+
+**3. Kick interlock.** Each family (and optionally each groove) carries a `kick` value on a 0–1 scale — how willingly it lands *with* the kick rather than answering it. It is applied as odds on cells that contain the beat, weighted full on beats 1 and 3 and half on 2 and 4. This is what separates `rolling` and `syncopated`, which share the `psy` vocabulary: measured over 800 phrases, rolling lands on the quarter 84% of the time and syncopated 40%, while `broken` sits at 20% and `driving` at 96%.
+
+**4. Bar form.** A 4-bar phrase picks a form biased heavily toward restatement — `AAAA'` 28%, `AAAB'` 28%, `AABA'` 22%, `AA'AA''` 17%, `ABAB'` 6% — where `A'` is one small change, usually on the last beat where the ear already expects a turnaround, and `B` is still derived from `A`. A medium mutation varies the phrase's own opening bar rather than drawing a fresh figure, so it sounds like the same machine drifting. (The **Rhythm** button is an explicit ask for a new figure, so it does regenerate from scratch.)
+
+The bar form is not serialized, so this pass did not change the saved-state version and existing Live Sets still restore. A restored phrase has its bar A recovered from its own onsets, so motif variation keeps working after a reload.
 
 ## Persistence
 
