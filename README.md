@@ -6,9 +6,18 @@ A Max for Live instrument for Ableton Live that generates novel, stylistically c
 
 ## Status
 
-**v0.2 built.** The generative core, synth engine, and device patch are implemented and tested (20/20 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
+**v0.3 built.** The generative core, synth engine, and device patch are implemented and tested (30/30 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
 
-v0.2 is the low-end voicing pass: the register grammar was tightened toward the root (80/20 anchor rule, phrase-start grounding, leap resets), the filter now closes to a genuinely bassy floor after each squelch sweep, the sub oscillator is folded into a fixed 32.7–61.7 Hz window and lightly saturated so it reads on small speakers, and the wet network is high-passed at 500 Hz and ducked by the dry envelope so effects never cloud the fundamental.
+v0.3 is the persistence + character pass:
+
+- **State persistence.** A saved Live Set reopens with the bassline it was saved with. The whole working state — both RNG stream positions, the lineage counters, the chaos walks and every per-step layer — is flattened into one list and parked in a `pattr`, which Live saves with the set. Nothing regenerates on load: a restored phrase *is* the phrase, not a replay of its seed.
+- **Filter character (§2.3).** The filter is now an LP/BP blend with a saturating stage after it, so grooves can voice from round and closed to hollow and vocal; a resonance-tracking low shelf (§2.2) puts back the fundamental that high Squelch settings scoop out.
+- **Wet motion (§3).** The wet send is envelope-shaped per note (floor + amount) instead of static, and the delay taps are modulated by slow independent LFOs for diffusion.
+- **Novelty budget over timbre.** Novelty now allocates drift to timbre and wet as well as to notes, so a mutation can change the sound of a phrase and not only its pitches.
+- **Grammar.** Pickups/anticipations that tie into downbeats, repetition freezes that hold a phrase and then release it, a double-press `Return` that jumps straight to the lineage root, and the completed chaos walk (slow/medium/fast tiers).
+- **Microtiming can rush.** The clamp used to discard all early timing, so the device could only drag. Steps now schedule from the previous tick when they're ahead of the grid, giving each groove a real push/pull axis.
+
+v0.2 was the low-end voicing pass: the register grammar was tightened toward the root (80/20 anchor rule, phrase-start grounding, leap resets), the filter now closes to a genuinely bassy floor after each squelch sweep, the sub oscillator is folded into a fixed 32.7–61.7 Hz window and lightly saturated so it reads on small speakers, and the wet network is high-passed at 500 Hz and ducked by the dry envelope so effects never cloud the fundamental.
 
 ## Loading the device
 
@@ -36,7 +45,7 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 | **Length** | Phrase length: 1 / 2 / 4 bars. |
 | **Lock** | Freeze the current phrase — no mutation at boundaries. |
 | **Mutate** | Force a mutation now (depth scales with Novelty). |
-| **Return** | Return to the parent phrase in the lineage. |
+| **Return** | Return to the parent phrase in the lineage. Press twice within 700 ms to jump straight back to the lineage root. |
 | **Reseed** | New seed → brand-new phrase identity. |
 | **Rhythm / Pitch** | Regenerate just that layer, keeping the rest of the phrase identity. |
 
@@ -58,12 +67,18 @@ Rebuild the device after editing the builder:
 python3 scripts/build_device.py
 ```
 
+## Persistence
+
+The device serializes its generator state to outlet 0 as a `state` list, which the patch stores into `[pattr pg_state]` with a `set` message (storing without echoing, so there's no feedback loop). On load, `live.thisdevice` fires a `[t b b]`: the right outlet bangs the `pattr` first, so `Restore` hands the saved phrase back to the core *before* `pushall` runs — and `Restore` discards whatever regeneration Live's parameter restore had just queued.
+
+One deliberate limitation: `Restore` rebuilds `history` as `[phrase]`, because the lineage isn't serialized. After a reload the phrase and its identity (`A3`, generation, parent id) come back intact, but `Return` has no parent to go back to until you mutate again. It degrades to a no-op rather than to a wrong phrase.
+
 ## Architecture
 
 - Max for Live instrument device (MIDI in → audio out)
 - Legacy `js` (ES5) for the generative core — `js pg-core.js`, three outlets: synth params / note events / display
-- Plain MSP objects for the synth: saw+rect (0.6/0.45 mix) → drive → `tanh~` → `svf~` (resonant LPF with envelope + squelch mapping) → post-saturation; independent octave-folded sub sine through its own `tanh~` saturator; wet delay network high-passed at 500 Hz with the return ducked by the dry envelope
-- `live.*` parameters (13 total, 2 banks) for automation and Push mapping
-- Transport-synced clock: `metro 16n @quantize 16n` + `transport` position → JS phase correction
+- Plain MSP objects for the synth: saw+rect (0.6/0.45 mix) → drive → `tanh~` → `svf~` tapped for **both** lowpass and bandpass and blended per groove → `tanh~` nonlinearity (drive in / trim out) → resonance-compensating `onepole~ 120` low shelf → amp; independent octave-folded sub sine through its own `tanh~` saturator; wet delay network high-passed at 500 Hz, taps modulated by `cycle~ 0.19 / 0.27` for diffusion, send shaped by its own `adsr~` and the return ducked by the dry envelope
+- `live.*` parameters (13 total, 2 banks) for automation and Push mapping; generator state persists separately via `[pattr pg_state]`
+- Transport-synced clock: `metro 16n @quantize 16n` + `transport` position → JS phase correction, with an auxiliary `Task` that fires rushed steps ahead of their own grid tick
 
 A [Primordial Groove](https://primordialgroove.com) project.

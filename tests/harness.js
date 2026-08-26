@@ -15,7 +15,8 @@ function makeSandbox() {
   var state = {
     now: 1000000,          // fake clock (ms)
     tasks: [],             // scheduled Task shims
-    out: [[], [], []]      // recorded outlet messages per outlet
+    out: [[], [], []],     // recorded outlet messages per outlet
+    outT: [[], [], []]     // fake-clock time each message was emitted
   };
 
   function FakeTask(fn, owner) {
@@ -37,6 +38,7 @@ function makeSandbox() {
     post: function () {},
     outlet: function (idx) {
       state.out[idx].push(Array.prototype.slice.call(arguments, 1));
+      state.outT[idx].push(state.now);
     }
   };
   sandbox.__state = state;
@@ -86,6 +88,27 @@ function lastDump(sb) {
 
 function collect(sb, outletIdx, selector) {
   return sb.__state.out[outletIdx].filter(function (m) { return m[0] === selector; });
+}
+
+// same as collect(), but pairs each message with the fake-clock time it fired
+function collectTimed(sb, outletIdx, selector) {
+  var out = [];
+  sb.__state.out[outletIdx].forEach(function (m, i) {
+    if (m[0] === selector) out.push({ msg: m, t: sb.__state.outT[outletIdx][i] });
+  });
+  return out;
+}
+
+function callArgs(sb, name, argArray) {
+  return vm.runInContext(name, sb).apply(null, argArray);
+}
+
+// the state list Max would have stored in [pattr pg_state]
+function lastState(sb) {
+  var msgs = collect(sb, 0, "state");
+  assert(msgs.length > 0, "no state message emitted");
+  // outlet(0, "state", array) — Max flattens the Array argument into a list
+  return msgs[msgs.length - 1][1];
 }
 
 // ---------------------------------------------------------------- test runner
@@ -398,6 +421,255 @@ test("register distribution: root-dominant, sub always 32.7-61.7 Hz", function (
   collect(sbb, 1, "spitch").forEach(function (s) {
     assert(s[1] >= 24 && s[1] <= 35, "root-11 sub pitch outside window: " + s[1]);
   });
+});
+
+test("state round-trips through the pattr list (save/reload)", function () {
+  var a = makeSandbox();
+  call(a, "groove", 4);
+  call(a, "root", 5);
+  call(a, "novelty", 0.8);
+  for (var i = 0; i < 5; i++) call(a, "Mutate");
+  tickSteps(a, 96);
+  var saved = lastState(a);
+  assert(saved.length >= 20 + 8, "state list too short: " + saved.length);
+  assert(saved.length === 20 + saved[19] * 8,
+    "state list length does not match its step count: " + saved.length + " vs " + saved[19]);
+  saved.forEach(function (v, k) {
+    assert(typeof v === "number" && isFinite(v), "non-numeric atom at " + k + ": " + v);
+  });
+  call(a, "dump");
+  var before = lastDump(a);
+
+  // a fresh device — different phrase, then handed the saved list
+  var b = makeSandbox();
+  call(b, "dump");
+  assert(lastDump(b).phrase.id !== before.phrase.id, "sandboxes started identical; test is vacuous");
+  callArgs(b, "Restore", saved);
+  call(b, "dump");
+  var after = lastDump(b);
+
+  ["id", "parentId", "generation", "seed", "bars", "contour"].forEach(function (k) {
+    assert(after.phrase[k] === before.phrase[k], k + " lost in restore: " + after.phrase[k]);
+  });
+  ["onsets", "accents", "slides"].forEach(function (k) {
+    assert(JSON.stringify(after.phrase[k]) === JSON.stringify(before.phrase[k]),
+      k + " layer differs after restore");
+  });
+  // pitch and velocity only exist on steps that sound; rest slots are never read
+  before.phrase.onsets.forEach(function (on, s) {
+    if (!on) return;
+    assert(after.phrase.pitches[s] === before.phrase.pitches[s], "pitch at step " + s + " lost in restore");
+    assert(after.phrase.vels[s] === before.phrase.vels[s], "velocity at step " + s + " lost in restore");
+  });
+  ["gates", "probs", "timbres", "wets", "micros"].forEach(function (k) {
+    var x = before.phrase[k], y = after.phrase[k];
+    assert(x.length === y.length, k + " length differs after restore");
+    for (var s = 0; s < x.length; s++) {
+      assert(Math.abs(x[s] - y[s]) <= 0.001, k + "[" + s + "] differs: " + x[s] + " vs " + y[s]);
+    }
+  });
+  assert(after.params.root === before.params.root, "root not restored");
+  assert(Math.abs(after.slow.cut - before.slow.cut) <= 0.001, "slow walk not restored");
+  assert(Math.abs(after.med.drv - before.med.drv) <= 0.001, "medium walk not restored");
+  assert(after.freezeLeft === before.freezeLeft, "freeze counter not restored");
+
+  // and the restored phrase actually plays — no regeneration at the first boundary
+  tickSteps(b, 32);
+  call(b, "dump");
+  assert(lastDump(b).phrase.id === before.phrase.id,
+    "restored phrase was regenerated away instead of playing");
+});
+
+test("Restore ignores empty, truncated, and wrong-version lists", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall"); // what live.thisdevice fires on load
+  call(sb, "dump");
+  var id = lastDump(sb).phrase.id;
+  var good = lastState(sb);
+
+  callArgs(sb, "Restore", []);                       // pattr banged with nothing stored
+  callArgs(sb, "Restore", [0]);
+  callArgs(sb, "Restore", good.slice(0, 22));        // header claims steps the list lacks
+  var wrongVer = good.slice(); wrongVer[0] = 99;
+  callArgs(sb, "Restore", wrongVer);
+
+  call(sb, "dump");
+  assert(lastDump(sb).phrase.id === id, "a malformed state list clobbered the live phrase");
+  tickSteps(sb, 16); // and the device still runs
+});
+
+test("rushed onsets fire before their own grid tick", function () {
+  var early = 0, late = 0;
+  for (var g = 0; g < 7; g++) {
+    var sb = makeSandbox();
+    call(sb, "groove", g);
+    var t0 = sb.__state.now;
+    tickSteps(sb, 64, 125);
+    collectTimed(sb, 1, "trig").forEach(function (e) {
+      var off = (e.t - t0) % 125;
+      // a dragged note lands within min(30, 125*0.35) = 30ms after its tick;
+      // anything past that can only be the next step arriving ahead of schedule
+      if (off > 60) early++; else late++;
+    });
+  }
+  assert(late > 0, "no on-grid notes at all");
+  assert(early > 0, "no note ever fired ahead of its tick — the early lane is dead");
+});
+
+test("microtiming is signed and bounded either side of the grid", function () {
+  var sawNeg = false, sawPos = false;
+  for (var g = 0; g < 7; g++) {
+    var sb = makeSandbox();
+    call(sb, "groove", g);
+    for (var m = 0; m < 4; m++) call(sb, "Mutate");
+    call(sb, "dump");
+    lastDump(sb).phrase.micros.forEach(function (v) {
+      assert(v >= -0.25 && v <= 0.35, "micro outside clamp: " + v);
+      if (v < -0.002) sawNeg = true;
+      if (v > 0.002) sawPos = true;
+    });
+  }
+  assert(sawNeg, "no negative (rushed) micro offsets generated");
+  assert(sawPos, "no positive (dragged) micro offsets generated");
+});
+
+test("pickups anticipate downbeats and tie into them", function () {
+  var pickups = 0, bars = 0;
+  for (var g = 0; g < 7; g++) {
+    for (var r = 0; r < 6; r++) {
+      var sb = makeSandbox();
+      call(sb, "groove", g);
+      for (var m = 0; m < r; m++) call(sb, "Mutate");
+      call(sb, "dump");
+      var p = lastDump(sb).phrase;
+      var n = p.onsets.length;
+      for (var b = 0; b < p.bars; b++) {
+        var down = b * 16;
+        if (!p.onsets[down]) continue;
+        bars++;
+        var pre = (down - 1 + n) % n;
+        if (!p.onsets[pre]) continue;
+        // an anticipation restates the downbeat's pitch a 16th early, unaccented
+        if (p.pitches[pre] === p.pitches[down] && !p.accents[pre]) pickups++;
+      }
+    }
+  }
+  assert(bars > 40, "too few downbeats sampled: " + bars);
+  assert(pickups > 0, "no pickups generated across any groove");
+  assert(pickups / bars < 0.7, "pickups on " + (pickups / bars).toFixed(2) + " of downbeats — too mechanical");
+});
+
+test("repetition freeze holds a phrase, then releases it", function () {
+  var froze = false, released = false;
+  for (var trial = 0; trial < 40 && !released; trial++) {
+    var sb = makeSandbox();
+    call(sb, "groove", 6);       // hypnotic: frz 0.35
+    call(sb, "novelty", 0.05);   // low novelty widens the freeze probability
+    for (var c = 0; c < 24; c++) {
+      tickSteps(sb, 32);
+      call(sb, "dump");
+      var d = lastDump(sb);
+      if (d.freezeLeft > 0) froze = true;
+      else if (froze) released = true;
+    }
+  }
+  assert(froze, "freeze never triggered on the hypnotic groove");
+  assert(released, "freeze never released — the counter does not decrement");
+});
+
+test("double-press Return jumps to the lineage root", function () {
+  var sb = makeSandbox();
+  for (var i = 0; i < 6; i++) call(sb, "Mutate");
+  call(sb, "dump");
+  assert(lastDump(sb).phrase.generation >= 3, "setup did not build a deep enough lineage");
+
+  sb.__state.advance(5000);   // well outside the double-press window
+  call(sb, "Return");
+  call(sb, "dump");
+  var single = lastDump(sb).phrase;
+
+  call(sb, "Return");         // no clock advance: this is the second press
+  call(sb, "dump");
+  var doubled = lastDump(sb).phrase;
+  assert(doubled.generation === 0, "double-press did not land on generation 0: " + doubled.generation);
+  assert(single.generation >= doubled.generation, "single press went further back than the double press");
+});
+
+test("novelty budget gates timbre and wet drift, not just notes", function () {
+  function drift(novelty) {
+    var sb = makeSandbox();
+    call(sb, "novelty", novelty);
+    call(sb, "dump");
+    var base = lastDump(sb).phrase;
+    var moved = 0, seen = 0;
+    for (var m = 0; m < 12; m++) {
+      call(sb, "Mutate");
+      call(sb, "dump");
+      var p = lastDump(sb).phrase;
+      for (var s = 0; s < base.timbres.length; s++) {
+        seen++;
+        if (Math.abs(p.timbres[s] - base.timbres[s]) > 0.001 ||
+            Math.abs(p.wets[s] - base.wets[s]) > 0.001) moved++;
+      }
+      base = p;
+    }
+    return moved / seen;
+  }
+  var lo = drift(0.05), hi = drift(0.95);
+  assert(hi > lo, "timbre/wet drift ignores the novelty budget (" + lo.toFixed(3) + " vs " + hi.toFixed(3) + ")");
+  assert(hi > 0.02, "timbre/wet never drift even at full novelty");
+});
+
+test("filter mode, nonlinearity and shelf track groove and squelch", function () {
+  function last(sb, sel) {
+    var m = collect(sb, 0, sel);
+    assert(m.length > 0, "no " + sel + " emitted");
+    return m[m.length - 1][1];
+  }
+  // acidic (bp 0.30) at full squelch should open the bandpass path
+  var acid = makeSandbox();
+  call(acid, "groove", 4);
+  call(acid, "squelch", 1);
+  tickSteps(acid, 4);
+  var bp = last(acid, "bpamt");
+  assert(bp > 0.15, "acidic groove did not blend in bandpass: " + bp);
+  assert(Math.abs(last(acid, "lpamt") + bp - 1) < 1e-6, "lp/bp blend does not sum to unity");
+  assert(last(acid, "nlin") > 1, "nonlinear drive never engaged");
+  assert(last(acid, "shelf") > 0, "resonance-compensation shelf never engaged");
+
+  // restrained (bp 0.00) stays a pure lowpass whatever the squelch
+  var flat = makeSandbox();
+  call(flat, "groove", 0);
+  call(flat, "squelch", 1);
+  tickSteps(flat, 4);
+  assert(last(flat, "bpamt") === 0, "restrained groove should be pure lowpass");
+  assert(last(flat, "lpamt") === 1, "lowpass amount should be unity with no bandpass");
+
+  // the shelf compensates resonance: more squelch, more low-shelf lift
+  var dry = makeSandbox();
+  call(dry, "groove", 4);
+  call(dry, "squelch", 0);
+  tickSteps(dry, 4);
+  assert(last(dry, "shelf") < last(acid, "shelf"), "shelf does not track resonance");
+  assert(last(acid, "shelf") <= 0.95, "shelf exceeded its clamp");
+});
+
+test("wet envelope and diffusion parameters stay in range", function () {
+  for (var w = 0; w <= 1.001; w += 0.25) {
+    var sb = makeSandbox();
+    call(sb, "wet", w);
+    tickSteps(sb, 8, 40); // fast steps: exercises the delay-time clamp floor
+    ["wamt", "wflr", "wdec", "dmod", "dly", "dly2"].forEach(function (sel) {
+      var m = collect(sb, 0, sel);
+      assert(m.length > 0, sel + " never emitted at wet=" + w);
+      var v = m[m.length - 1][1];
+      assert(isFinite(v) && v >= 0, sel + " out of range: " + v);
+    });
+    var flr = collect(sb, 0, "wflr").pop()[1];
+    assert(flr >= 0.2 && flr <= 0.7, "wet floor outside clamp: " + flr);
+    var d = collect(sb, 0, "dly").pop()[1];
+    assert(d >= 20 && d <= 1800, "delay time outside clamp: " + d);
+  }
 });
 
 // ----------------------------------------------------------------

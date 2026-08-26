@@ -28,21 +28,34 @@ var GRAVITY = {
 };
 var ANCHOR = { 0: 1, 7: 1, 10: 1, 12: 1, 19: 1, 22: 1, 24: 1 }; // §1.5
 
-// §1.10 groove states — each moves many parameters together
+// contour names, ordered — the index is what gets serialized in the saved state
+var CONTOURS = ["repeat", "pedal", "neighbor", "arch", "ascending", "descending", "leaprtn"];
+
+// §1.10 groove states — each moves many parameters together.
+// push = how far the groove leans forward (fraction of a step, applied as rush
+// on accents and drag on ghosts); pick = anticipation probability per downbeat;
+// bp  = lowpass/bandpass blend (§2.3); frz = probability of a repetition freeze.
 var GROOVES = [
   { name: "restrained", dens: 0.35, off: 0.20, gate: 0.50, acc: 0.15, sld: 0.08, mut: 0.4, swing: 0.02,
+    push: 0.025, pick: 0.12, bp: 0.00, frz: 0.20,
     contours: { repeat: 3, pedal: 3, neighbor: 2, arch: 1, descending: 1 } },
   { name: "rolling",    dens: 0.55, off: 0.75, gate: 0.45, acc: 0.30, sld: 0.15, mut: 0.5, swing: 0.07,
+    push: 0.050, pick: 0.35, bp: 0.05, frz: 0.18,
     contours: { repeat: 3, pedal: 2, leaprtn: 2, arch: 1, neighbor: 1 } },
   { name: "syncopated", dens: 0.55, off: 0.85, gate: 0.55, acc: 0.45, sld: 0.25, mut: 0.9, swing: 0.10,
+    push: 0.045, pick: 0.45, bp: 0.15, frz: 0.10,
     contours: { neighbor: 2, leaprtn: 2, arch: 2, repeat: 1, ascending: 1 } },
   { name: "driving",    dens: 0.80, off: 0.25, gate: 0.60, acc: 0.50, sld: 0.12, mut: 0.5, swing: 0.03,
+    push: 0.080, pick: 0.25, bp: 0.05, frz: 0.22,
     contours: { repeat: 3, pedal: 2, ascending: 1, descending: 1 } },
   { name: "acidic",     dens: 0.65, off: 0.55, gate: 0.50, acc: 0.60, sld: 0.50, mut: 0.9, swing: 0.05,
+    push: 0.060, pick: 0.35, bp: 0.30, frz: 0.08,
     contours: { leaprtn: 3, neighbor: 2, ascending: 2, arch: 1, repeat: 1 } },
   { name: "broken",     dens: 0.50, off: 0.60, gate: 0.55, acc: 0.55, sld: 0.25, mut: 1.3, swing: 0.09,
+    push: 0.035, pick: 0.50, bp: 0.20, frz: 0.06,
     contours: { arch: 2, leaprtn: 2, descending: 2, neighbor: 1, ascending: 1 } },
   { name: "hypnotic",   dens: 0.55, off: 0.50, gate: 0.40, acc: 0.12, sld: 0.10, mut: 0.15, swing: 0.04,
+    push: 0.018, pick: 0.15, bp: 0.00, frz: 0.35,
     contours: { repeat: 4, pedal: 3, neighbor: 1 } }
 ];
 
@@ -62,8 +75,12 @@ var letterIdx = 0;       // root-phrase letter, advances on Reseed
 
 var seedRng = null;      // pattern stream
 var chaosRng = null;     // §4.1 separate stream so chaos and pattern stay uncorrelated
-var slow = { cut: 0, res: 0 };   // §4.2 slow walk: filter character
-var med = { dec: 0, drv: 0 };    // §4.2 medium walk: decay / drive
+var slow = { cut: 0, res: 0, wet: 0 }; // §4.2 slow walk: filter + wet character
+var med = { dec: 0, drv: 0 };          // §4.2 medium walk: decay / drive
+var fast = { tim: 0, wet: 0 };         // §4.2 fast walk: per-step timbre / wet
+
+var freezeLeft = 0;      // §1.11 repetition freeze: phrase cycles left to hold
+var lastReturnMs = -1;   // §5.3 double-press Return = return to the lineage root
 
 var playStep = 0;
 var lastTick = -1;
@@ -78,25 +95,40 @@ var posTime = -1;
 var noteOn = false;
 var offPending = false;
 var pendingStep = -1;
+var earlyStep = -1;      // step scheduled ahead of its own tick (rushed onset)
+var skipStep = -1;       // step already fired early — its tick must not re-fire it
 var lastEmittedDelayMs = -1;
 
 var offTask = null;
 var noteTask = null;
+var earlyTask = null;
 
 // ---------------------------------------------------------------- utilities
 
 function makeRng(seed) { // Park–Miller: safe in doubles, no imul needed
   var s = Math.floor(Math.abs(seed)) % 2147483647;
   if (s < 1) s = 1;
-  return function () {
+  var f = function () {
     s = (s * 16807) % 2147483647;
     return (s - 1) / 2147483646;
   };
+  f.get = function () { return s; };        // §5.4: the stream position is saved state
+  f.set = function (v) {
+    var n = Math.floor(Math.abs(v)) % 2147483647;
+    s = n < 1 ? 1 : n;
+  };
+  return f;
 }
 
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function gauss(d, sigma) { return Math.exp(-(d * d) / (2 * sigma * sigma)); }
+function round3(v) { return Math.round((v || 0) * 1000) / 1000; }
+
+function contourIdx(name) {
+  for (var i = 0; i < CONTOURS.length; i++) if (CONTOURS[i] === name) return i;
+  return 0;
+}
 
 function median(arr) {
   var a = arr.slice().sort(function (x, y) { return x - y; });
@@ -115,7 +147,8 @@ function clonePhrase(p) {
     letter: p.letter, seed: p.seed, bars: p.bars, contour: p.contour,
     onsets: p.onsets.slice(), gates: p.gates.slice(), pitches: p.pitches.slice(),
     accents: p.accents.slice(), slides: p.slides.slice(), probs: p.probs.slice(),
-    timbres: p.timbres.slice(), wets: p.wets.slice(), micros: p.micros.slice()
+    timbres: p.timbres.slice(), wets: p.wets.slice(), micros: p.micros.slice(),
+    vels: p.vels ? p.vels.slice() : []
   };
 }
 
@@ -307,9 +340,32 @@ function genStepMeta(rng, p, groove) {
     p.probs[s] = (barPos % 4 === 0) ? 1.0 : clamp(1 - P.novelty * 0.3 * rng(), 0.7, 1);
     p.timbres[s] = p.accents[s] ? 0.15 + rng() * 0.15 : (rng() - 0.5) * 0.3;
     p.wets[s] = (beatPos === 2 ? 0.12 : 0) + rng() * 0.15;
-    p.micros[s] = (beatPos === 2 ? groove.swing : 0) + (rng() - 0.5) * 0.03; // fraction of a step
+    // §1.12 microtiming is signed: swing drags the 8th offbeats, accents lean
+    // forward onto the beat, ghosts lay back behind it.
+    var micro = (beatPos === 2 ? groove.swing : 0);
+    if (p.accents[s]) micro -= groove.push;
+    else if (vels[s] < 72) micro += groove.push * 0.8;
+    micro += (rng() - 0.5) * 0.04;
+    p.micros[s] = clamp(micro, -0.25, 0.35); // fraction of a step
   }
   p.vels = vels;
+}
+
+// §1.13 pickups: a 16th before a downbeat that anticipates its pitch and, most
+// of the time, ties through it — the bar arrives before the bar line does.
+function addPickups(rng, p, groove) {
+  var n = p.onsets.length;
+  for (var b = 0; b < p.bars; b++) {
+    var down = b * STEPS_PER_BAR;
+    var pre = (down - 1 + n) % n;
+    if (!p.onsets[down] || p.onsets[pre]) continue;
+    if (rng() >= groove.pick) continue;
+    p.onsets[pre] = true;
+    p.pitches[pre] = p.pitches[down];
+    p.accents[pre] = false;
+    p.slides[pre] = false;
+    if (rng() < 0.6) p.slides[down] = true; // tie: the pickup sustains through
+  }
 }
 
 function generatePhrase(seed, parent) {
@@ -328,6 +384,7 @@ function generatePhrase(seed, parent) {
   p.pitches = genPitches(rng, p);
   p.accents = genAccents(rng, p, groove);
   p.slides = genSlides(rng, p, groove, dens);
+  addPickups(rng, p, groove);
   genStepMeta(rng, p, groove);
   return p;
 }
@@ -379,10 +436,31 @@ function mutatePhrase(parent, novelty) {
     child.pitches = genPitches(rng, child);       // same contour type = preserved identity
     child.accents = genAccents(rng, child, groove);
     child.slides = genSlides(rng, child, groove, dens);
+    addPickups(rng, child, groove);
   }
 
-  genStepMeta(rng, child, groove); // timbre / wet / micro re-rolled (bounded, §4.3)
+  // §4.3: a low-depth mutation spends only its timbre/wet allocation on the
+  // sound layers; a rhythm change has new steps and needs the full metadata pass.
+  if (depth === 0) mutateMeta(rng, child, alloc);
+  else genStepMeta(rng, child, groove);
   return child;
+}
+
+// §4.3 novelty budget applied to the per-step sound layers
+function mutateMeta(rng, p, alloc) {
+  var n = p.onsets.length;
+  var gateFrac = clamp(grooveNow().gate * (1.7 - 1.1 * P.chunk), 0.15, 0.98);
+  for (var s = 0; s < n; s++) {
+    if (!p.onsets[s]) {
+      p.gates[s] = 0; p.probs[s] = 0; p.timbres[s] = 0;
+      p.wets[s] = 0; p.micros[s] = 0; p.vels[s] = 0;
+      continue;
+    }
+    if (!(p.vels[s] > 0)) p.vels[s] = Math.floor(82 + rng() * 18);
+    p.gates[s] = p.slides[s] ? 1.02 : gateFrac * (0.9 + rng() * 0.2);
+    if (rng() < alloc.timbre) p.timbres[s] = clamp(p.timbres[s] + (rng() - 0.5) * 0.5, -0.6, 0.6);
+    if (rng() < alloc.wet) p.wets[s] = clamp(p.wets[s] + (rng() - 0.5) * 0.35, 0, 0.6);
+  }
 }
 
 // ---------------------------------------------------------------- lineage (§1.2 / §5.3)
@@ -391,21 +469,37 @@ function adoptPhrase(p) {
   phrase = p;
   rememberPhrase(p);
   updateDisplay();
+  pushState();
 }
 
 function returnToParent() {
   if (!phrase || phrase.generation === 0) return;
   for (var i = history.length - 1; i >= 0; i--) {
-    if (history[i].id === phrase.parentId) { phrase = history[i]; updateDisplay(); return; }
+    if (history[i].id === phrase.parentId) { phrase = history[i]; updateDisplay(); pushState(); return; }
   }
   for (i = 0; i < history.length; i++) {
-    if (history[i].generation === 0) { phrase = history[i]; updateDisplay(); return; }
+    if (history[i].generation === 0) { phrase = history[i]; updateDisplay(); pushState(); return; }
   }
 }
 
+// §1.2: skip the lineage and snap straight back to the phrase everything grew from
+function returnToRoot() {
+  if (!phrase) return;
+  for (var i = 0; i < history.length; i++) {
+    if (history[i].generation === 0) { phrase = history[i]; updateDisplay(); pushState(); return; }
+  }
+  returnToParent();
+}
+
 function phraseBoundary() {
+  phraseAdvance();
+  pushState(); // §5.4: the walks drift every cycle, so the saved state follows them
+}
+
+function phraseAdvance() {
   slow.cut = walkUpdate(slow.cut, 0.08, chaosRng); // §4.2 clamps
   slow.res = walkUpdate(slow.res, 0.03, chaosRng);
+  slow.wet = walkUpdate(slow.wet, 0.10, chaosRng);
   if (firstCycle) { firstCycle = false; pushSynth(); updateDisplay(); return; }
   if (P.lock) { pushSynth(); return; } // §5.3 lock phrase
 
@@ -413,15 +507,26 @@ function phraseBoundary() {
     if (pendingRegen === "full") adoptPhrase(generatePhrase(Math.floor(chaosRng() * 2147483646), null));
     else adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.4)));
     pendingRegen = null;
+    freezeLeft = 0;
     pushSynth();
     return;
   }
 
+  // §1.11 freeze: hold the identity for a few cycles so a good phrase gets to land
+  if (freezeLeft > 0) { freezeLeft--; pushSynth(); return; }
+
   var r = chaosRng(); // phrase-level chaos domain (§4.1)
   var pReturn = phrase.generation > 0 ? (0.10 + 0.35 * (1 - P.novelty)) : 0;
   var pMut = clamp((0.2 + 0.6 * P.novelty) * grooveNow().mut, 0, 0.9);
-  if (r < pReturn) returnToParent();
-  else if (r < pReturn + pMut) adoptPhrase(mutatePhrase(phrase, P.novelty));
+  if (r < pReturn) {
+    // deep in a lineage, the pull is toward the root, not just one step back
+    if (phrase.generation >= 3 && chaosRng() < 0.45) returnToRoot();
+    else returnToParent();
+  } else if (r < pReturn + pMut) {
+    adoptPhrase(mutatePhrase(phrase, P.novelty));
+  } else if (chaosRng() < grooveNow().frz * (1.2 - P.novelty)) {
+    freezeLeft = 1 + Math.floor(chaosRng() * 3);
+  }
   // else: repeat as-is — repetition is a feature
   pushSynth();
 }
@@ -430,6 +535,7 @@ function barBoundary() {
   med.dec = walkUpdate(med.dec, 0.12, chaosRng);
   med.drv = walkUpdate(med.drv, 0.05, chaosRng);
   pushSynth();
+  pushState(); // the medium walk drifts every bar; the saved state follows it
 }
 
 // ---------------------------------------------------------------- synth coupling (§2 / §5.1)
@@ -442,23 +548,42 @@ function pushSynth() {
   var reso = clamp(0.06 + P.squelch * 0.68 + slow.res, 0, 0.92);
   var envd = 180 + Math.pow(P.squelch, 1.4) * 2800;
   var drv = (0.7 + P.drive * 2.6) * (1 + med.drv);
+  // §2.3 filter mode: each groove blends a little bandpass into the lowpass,
+  // and squelch opens that blend further — capped so the fundamental survives.
+  var bpmix = clamp(grooveNow().bp * (0.35 + 0.65 * P.squelch), 0, 0.35);
   outlet(0, "cutoff", cutoffHz, 30);
   outlet(0, "reso", reso);
   outlet(0, "envd", envd, 30);
   outlet(0, "drv", drv, 30);
+  outlet(0, "lpamt", 1 - bpmix);
+  outlet(0, "bpamt", bpmix);
+  // §2.3 nonlinear filter: resonance drives the post-filter saturator harder, so
+  // resonant peaks compress and bloom harmonics instead of just getting louder
+  outlet(0, "nlin", 1 + reso * 1.9);
+  outlet(0, "nlout", 1 / (1 + reso * 1.1));
+  // §2.2 resonance-tracking low shelf: a resonant lowpass thins its own passband,
+  // so the low shelf comes up exactly as far as the resonance (and bandpass) takes it away
+  outlet(0, "shelf", clamp(reso * 0.7 + bpmix * 0.9, 0, 0.95));
   outlet(0, "post", 1 + P.drive * 0.8);
-  outlet(0, "gain", 0.5 * (1 + reso * 0.6)); // §2.2 resonance gain compensation
+  outlet(0, "gain", 0.55 * (1 + reso * 0.15)); // §2.2 residual broadband compensation
   outlet(0, "adec", lerp(430, 120, P.chunk) * (1 + med.dec * 0.5));
   outlet(0, "asus", lerp(0.5, 0.12, P.chunk));
   outlet(0, "sub", 0.45 + P.sub * 0.55); // §2.2: floor keeps low-end energy at any Sub setting
   outlet(0, "wet", Math.pow(P.wet, 1.25), 60);
   outlet(0, "duck", 0.45 + 0.4 * P.wet);
   outlet(0, "fb", 0.28 + P.wet * 0.22);
+  // §3.2 envelope-shaped send: the send opens with its own envelope per note, so
+  // the tail is what gets thrown into the delay rather than the transient
+  outlet(0, "wamt", 0.35 + P.wet * 0.4);
+  outlet(0, "wflr", clamp(0.55 - P.wet * 0.25, 0.2, 0.7));
+  outlet(0, "wdec", lerp(240, 900, P.wet));
+  outlet(0, "dmod", 0.8 + P.wet * 3.2); // §3.2 tap modulation depth in ms (diffusion)
 }
 
 function pushDelays() {
-  outlet(0, "dly", stepMs * 3);  // dotted 8th
-  outlet(0, "dly2", stepMs * 5); // 5/16 polymetric tap
+  // clamped to the tapin~ buffer: at very slow tempos 5 steps would run past it
+  outlet(0, "dly", clamp(stepMs * 3, 20, 1800));  // dotted 8th
+  outlet(0, "dly2", clamp(stepMs * 5, 20, 1900)); // 5/16 polymetric tap
   lastEmittedDelayMs = stepMs;
 }
 
@@ -487,10 +612,11 @@ function fireStep(s) {
   var acc = p.accents[s];
   var tie = p.slides[s] && noteOn;
   var glide = p.slides[s] ? Math.max(20, stepMs * 0.45) : 4;
+  var tim = clamp(p.timbres[s] + fast.tim, -0.8, 0.8); // §4.2 fast walk rides the step layer
 
   // §2.1 filter state machine: accent drives coupled env/drive/decay changes
   outlet(1, "fdec", fdecBase() * (acc ? 0.8 : 1));
-  outlet(1, "fmul", (acc ? 1.55 : 1.0) * (1 + p.timbres[s] * 0.4));
+  outlet(1, "fmul", (acc ? 1.55 : 1.0) * (1 + tim * 0.4));
   outlet(1, "dmul", (acc ? 1.35 : 1.0) * (1 + (p.vels[s] / 127) * 0.2));
   outlet(1, "pitch", p.pitches[s], glide);
   // §2.2 sub reinforcement + §2.5: sub pitch folded into 32.7–61.7 Hz (MIDI 24–35)
@@ -502,8 +628,9 @@ function fireStep(s) {
   if (!tie) outlet(1, "trig", p.vels[s] / 127); // slide = glide without retrigger
   noteOn = true;
 
-  // §5.1 per-step wet
-  outlet(0, "wet", clamp(Math.pow(P.wet, 1.25) + p.wets[s] * P.wet, 0, 1), 25);
+  // §5.1 per-step wet, offset by the fast and slow chaos walks (§4.2)
+  outlet(0, "wet",
+    clamp(Math.pow(P.wet, 1.25) + (p.wets[s] + fast.wet + slow.wet) * P.wet, 0, 1), 25);
 
   // hold through a tie, otherwise schedule the gate off
   var n = p.onsets.length;
@@ -519,22 +646,52 @@ function fireStep(s) {
 }
 
 function firePending() { fireStep(pendingStep); }
+function fireEarly() { fireStep(earlyStep); }
 
+function microMs(s) { // §1.12 signed offset in ms, bounded either side of the grid
+  var lim = Math.min(30, stepMs * 0.35);
+  return clamp(phrase.micros[s] * stepMs, -lim, lim);
+}
+
+// a step that drags: schedule it after its own tick
 function scheduleFire(s) {
   var p = phrase;
   if (!p || !p.onsets[s]) { restHold(); return; }
-  var ms = clamp(p.micros[s] * stepMs, 0, 30);
+  var ms = microMs(s);
   if (ms < 2 || !noteTask) { fireStep(s); return; }
   pendingStep = s;
   noteTask.cancel();
   noteTask.schedule(ms);
 }
 
+// a step that rushes: schedule it from the PREVIOUS tick, before its own arrives.
+// Without this the device could only ever lay back, never push.
+function scheduleEarly(s) {
+  skipStep = -1;
+  if (s === 0) return; // never rush across a phrase boundary — the phrase may change
+  var p = phrase;
+  if (!p || !p.onsets[s] || !earlyTask) return;
+  var ms = microMs(s);
+  if (ms > -2) return;
+  earlyStep = s;
+  skipStep = s;
+  earlyTask.cancel();
+  earlyTask.schedule(Math.max(1, stepMs + ms));
+}
+
 function onRestart(total) {
   deltas = [];
   firstCycle = true;
+  skipStep = -1;
+  if (earlyTask) earlyTask.cancel();
   playStep = (posTime > 0 && Date.now() - posTime < 60 && posStep >= 0) ? posStep % total : 0;
   restHold();
+}
+
+function stepWalk() { // §4.2 fast walk: drifts every step, bounded and novelty-scaled
+  var amt = 0.35 + P.novelty * 0.65;
+  fast.tim = walkUpdate(fast.tim, 0.18 * amt, chaosRng);
+  fast.wet = walkUpdate(fast.wet, 0.14 * amt, chaosRng);
 }
 
 function tick() {
@@ -562,8 +719,12 @@ function tick() {
 
   if (playStep === 0) phraseBoundary();
   else if (playStep % STEPS_PER_BAR === 0) barBoundary();
-  scheduleFire(playStep);
-  playStep = (playStep + 1) % total;
+  stepWalk();
+  if (playStep === skipStep) skipStep = -1; // already fired ahead of this tick
+  else scheduleFire(playStep);
+  var next = (playStep + 1) % total;
+  scheduleEarly(next);
+  playStep = next;
 }
 
 // ---------------------------------------------------------------- display
@@ -613,6 +774,7 @@ function root(i) { // §5.3-adjacent: live transpose, phrase identity intact
     for (var s = 0; s < phrase.pitches.length; s++) {
       if (phrase.onsets[s]) phrase.pitches[s] += delta;
     }
+    pushState();
   }
 }
 
@@ -624,7 +786,12 @@ function plen(i) {
 function lock(v) { P.lock = v ? 1 : 0; } // §5.3 lock phrase
 
 function Mutate() { if (phrase) adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.25))); } // §5.3
-function Return() { returnToParent(); } // §5.3
+function Return() { // §5.3 — one press steps back a generation, two in a row go to the root
+  var now = Date.now();
+  if (lastReturnMs > 0 && now - lastReturnMs < 700) returnToRoot();
+  else returnToParent();
+  lastReturnMs = now;
+}
 function Reseed() { // §5.3: new seed, new root phrase, lineage restarts
   letterIdx++;
   adoptPhrase(generatePhrase((Date.now() % 2147483646) + 1, null));
@@ -646,8 +813,10 @@ function Rhythm() { // §5.3 regenerate one layer only: rhythm
   }
   phrase.accents = genAccents(rng, phrase, groove);
   phrase.slides = genSlides(rng, phrase, groove, dens);
+  addPickups(rng, phrase, groove);
   genStepMeta(rng, phrase, groove);
   updateDisplay();
+  pushState();
 }
 function Pitch() { // §5.3 regenerate one layer only: pitch
   if (!phrase) return;
@@ -655,14 +824,104 @@ function Pitch() { // §5.3 regenerate one layer only: pitch
   phrase.pitches = genPitches(rng, phrase);
   phrase.slides = genSlides(rng, phrase, grooveNow(), 0.5);
   updateDisplay();
+  pushState();
 }
 
-function pushall() { pushSynth(); pushDelays(); updateDisplay(); }
+// pushall runs on device load, after [pattr] has already had its say — so a set
+// that was saved before the device ever played still ends up with a stored phrase.
+function pushall() { pushSynth(); pushDelays(); updateDisplay(); pushState(); }
+
+// ---------------------------------------------------------------- state persistence (§5.4)
+// A Live Set has to reopen with the bassline it was saved with, so the whole
+// working state — both RNG stream positions, the lineage counters, the chaos
+// walks and every per-step layer — is flattened into one list of numbers and
+// parked in a [pattr], which Live saves with the set. Nothing here regenerates:
+// a restored phrase is the phrase itself, not a replay of the seed that made it.
+
+var STATE_VERSION = 1;
+var STATE_HEAD = 20;    // header atoms before the per-step block
+var STATE_STRIDE = 8;   // atoms per step
+
+function pushState() {
+  var p = phrase;
+  if (!p || !p.vels) return;
+  var n = p.onsets.length;
+  var a = [STATE_VERSION, seedRng.get(), chaosRng.get(), idCounter, letterIdx,
+           P.root, p.bars, p.id, p.parentId, p.generation,
+           p.letter.charCodeAt(0), p.seed, contourIdx(p.contour),
+           round3(slow.cut), round3(slow.res), round3(slow.wet),
+           round3(med.dec), round3(med.drv), freezeLeft, n];
+  for (var s = 0; s < n; s++) {
+    a.push((p.onsets[s] ? 1 : 0) | (p.accents[s] ? 2 : 0) | (p.slides[s] ? 4 : 0));
+    a.push(p.pitches[s] || 0);
+    a.push(p.vels[s] || 0);
+    a.push(round3(p.gates[s]));
+    a.push(round3(p.probs[s]));
+    a.push(round3(p.timbres[s]));
+    a.push(round3(p.wets[s]));
+    a.push(round3(p.micros[s]));
+  }
+  outlet(0, "state", a);
+}
+
+function Restore() { // list from [pattr] on device load
+  var n = arguments.length;
+  if (n < STATE_HEAD + STATE_STRIDE) return;   // empty or truncated: keep the fresh phrase
+  var a = [];
+  for (var i = 0; i < n; i++) a[i] = arguments[i];
+  if (a[0] !== STATE_VERSION) return;
+  var steps = a[19];
+  if (!(steps > 0) || n < STATE_HEAD + steps * STATE_STRIDE) return;
+
+  seedRng.set(a[1]);
+  chaosRng.set(a[2]);
+  idCounter = a[3];
+  letterIdx = a[4];
+  P.root = a[5];
+  P.bars = a[6];
+  slow.cut = a[13]; slow.res = a[14]; slow.wet = a[15];
+  med.dec = a[16]; med.drv = a[17];
+  freezeLeft = a[18];
+
+  var p = {
+    id: a[7], parentId: a[8], generation: a[9],
+    letter: String.fromCharCode(a[10]), seed: a[11], bars: a[6],
+    contour: CONTOURS[a[12]] || "repeat",
+    onsets: [], pitches: [], accents: [], slides: [],
+    gates: [], vels: [], probs: [], timbres: [], wets: [], micros: []
+  };
+  for (var s = 0; s < steps; s++) {
+    var o = STATE_HEAD + s * STATE_STRIDE, f = a[o];
+    p.onsets[s] = (f & 1) !== 0;
+    p.accents[s] = (f & 2) !== 0;
+    p.slides[s] = (f & 4) !== 0;
+    p.pitches[s] = a[o + 1];
+    p.vels[s] = a[o + 2];
+    p.gates[s] = a[o + 3];
+    p.probs[s] = a[o + 4];
+    p.timbres[s] = a[o + 5];
+    p.wets[s] = a[o + 6];
+    p.micros[s] = a[o + 7];
+  }
+
+  phrase = p;
+  history = [p];
+  // the dial/menu parameters Live restored have already fired by now; drop the
+  // regeneration they queued so the restored phrase is what actually plays
+  pendingRegen = null;
+  firstCycle = true;
+  updateDisplay();
+  pushSynth();
+}
 
 function dump() { // debug/test hook: full state snapshot on outlet 2
   var snap = {
     params: P, stepMs: stepMs, playStep: playStep,
     historyLen: history.length,
+    freezeLeft: freezeLeft,
+    slow: { cut: slow.cut, res: slow.res, wet: slow.wet },
+    med: { dec: med.dec, drv: med.drv },
+    fast: { tim: fast.tim, wet: fast.wet },
     phrase: phrase ? {
       id: phrase.id, parentId: phrase.parentId, generation: phrase.generation,
       name: phraseName(phrase), seed: phrase.seed, bars: phrase.bars, contour: phrase.contour,
@@ -681,6 +940,7 @@ function initCore() {
   chaosRng = makeRng(777001);
   offTask = new Task(sendOff, this);
   noteTask = new Task(firePending, this);
+  earlyTask = new Task(fireEarly, this);
   phrase = generatePhrase(Math.floor(seedRng() * 2147483646) + 1, null);
   rememberPhrase(phrase);
 }

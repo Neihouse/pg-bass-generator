@@ -279,12 +279,31 @@ def build():
     p.connect("pack_pos", 0, "prepend_pos", 0)
     p.connect("prepend_pos", 0, "js", 0)
     p.connect("trig_bb", 0, "js", 0)
-    p.connect("thisdevice", 0, "msg_pushall", 0)
+
+    # §5.4 load order. [t b b] fires right-to-left, so the saved state is handed
+    # back to the core BEFORE pushall runs: Restore drops the regeneration that
+    # Live's parameter restore just queued, and pushall then re-emits the synth
+    # params (and re-stores the state, so a set saved before the device ever
+    # played still comes back with a phrase).
+    p.obj("load_bb", "t b b", numinlets=1, numoutlets=2, outlettype=["bang", "bang"])
+    p.obj("pattr_state", "pattr pg_state", numinlets=2, numoutlets=3)
+    p.obj("prepend_restore", "prepend Restore", numinlets=1, numoutlets=1)
+    p.connect("thisdevice", 0, "load_bb", 0)
+    p.connect("load_bb", 1, "pattr_state", 0)   # bang: pattr outputs what it stored
+    p.connect("pattr_state", 0, "prepend_restore", 0)
+    p.connect("prepend_restore", 0, "js", 0)
+    p.connect("load_bb", 0, "msg_pushall", 0)
     p.connect("msg_pushall", 0, "js", 0)
 
     # ---------------------------------------------------------------- js outlet routing
     synth_params = ["cutoff", "reso", "envd", "drv", "post", "gain", "adec",
-                    "asus", "sub", "wet", "duck", "fb", "dly", "dly2"]
+                    "asus", "sub", "wet", "duck", "fb", "dly", "dly2",
+                    # §2.3 filter character: lp/bp blend, nonlinearity, resonance shelf
+                    "lpamt", "bpamt", "nlin", "nlout", "shelf",
+                    # §3 wet envelope + diffusion
+                    "wamt", "wflr", "wdec", "dmod",
+                    # §5.4 serialized generator state, headed for [pattr]
+                    "state"]
     p.obj("route_synth", "route " + " ".join(synth_params),
           numinlets=1, numoutlets=len(synth_params) + 1)
     note_params = ["pitch", "spitch", "trig", "fmul", "dmul", "fdec"]
@@ -298,6 +317,12 @@ def build():
     p.connect("js", 2, "route_disp", 0)
     p.connect("route_disp", 0, "prepend_set", 0)
     p.connect("prepend_set", 0, "display", 0)
+
+    # state list -> pattr as "set …": stores it for the Live Set without
+    # echoing back out of pattr, which would loop straight into Restore
+    p.obj("prepend_set_state", "prepend set", numinlets=1, numoutlets=1)
+    p.connect("route_synth", synth_params.index("state"), "prepend_set_state", 0)
+    p.connect("prepend_set_state", 0, "pattr_state", 0)
 
     # ---------------------------------------------------------------- smoothing lines
     p.sig("l_cutoff", "line~", 2, numoutlets=2)   # cutoff base Hz
@@ -367,11 +392,45 @@ def build():
     p.connect("cut_clip", 0, "filter", 1)
 
     # ---------------------------------------------------------------- post filter / VCA
+    # §2.3 filter mode: grooves blend the svf~ lowpass and bandpass outlets, so
+    # acidic/broken read hollow and forward while restrained stays pure lowpass.
+    p.sig("filt_lp", "*~ 1.", 2)
+    p.sig("filt_bp", "*~ 0.", 2)
+    p.sig("filt_mix", "+~", 2)
+    p.connect("filter", 0, "filt_lp", 0)          # svf~ lowpass outlet
+    p.connect("route_synth", synth_params.index("lpamt"), "filt_lp", 1)
+    p.connect("filter", 2, "filt_bp", 0)          # svf~ bandpass outlet
+    p.connect("route_synth", synth_params.index("bpamt"), "filt_bp", 1)
+    p.connect("filt_lp", 0, "filt_mix", 0)
+    p.connect("filt_bp", 0, "filt_mix", 1)
+
+    # §2.3 nonlinear filter: drive into a tanh~ and back out, so resonance
+    # compresses and growls at the peak instead of ringing linearly
+    p.sig("nl_pre", "*~ 1.", 2)
+    p.sig("nl_sat", "tanh~", 1)
+    p.sig("nl_post", "*~ 1.", 2)
+    p.connect("filt_mix", 0, "nl_pre", 0)
+    p.connect("route_synth", synth_params.index("nlin"), "nl_pre", 1)
+    p.connect("nl_pre", 0, "nl_sat", 0)
+    p.connect("nl_sat", 0, "nl_post", 0)
+    p.connect("route_synth", synth_params.index("nlout"), "nl_post", 1)
+
+    # §2.2 resonance compensation: a resonant lowpass robs the fundamental, so
+    # give back a low shelf that tracks resonance and the bandpass blend
+    p.sig("shelf_lp", "onepole~ 120.", 2)
+    p.sig("shelf_amt", "*~ 0.", 2)
+    p.sig("shelf_sum", "+~", 2)
+    p.connect("nl_post", 0, "shelf_lp", 0)
+    p.connect("shelf_lp", 0, "shelf_amt", 0)
+    p.connect("route_synth", synth_params.index("shelf"), "shelf_amt", 1)
+    p.connect("nl_post", 0, "shelf_sum", 0)
+    p.connect("shelf_amt", 0, "shelf_sum", 1)
+
     p.sig("amp_mul", "*~ 0.", 2)
     p.sig("post_mul", "*~ 1.", 2)
     p.sig("sat2", "tanh~", 1)
     p.sig("gain_mul", "*~ 0.5", 2)
-    p.connect("filter", 0, "amp_mul", 0)          # svf~ lowpass outlet
+    p.connect("shelf_sum", 0, "amp_mul", 0)
     p.connect("adsr_amp", 0, "amp_mul", 1)
     p.connect("amp_mul", 0, "post_mul", 0)
     p.connect("route_synth", synth_params.index("post"), "post_mul", 1)
@@ -415,7 +474,23 @@ def build():
     p.connect("adsr_amp", 0, "duckamt_mul", 0)
     p.connect("route_synth", synth_params.index("duck"), "duckamt_mul", 1)
     p.connect("duckamt_mul", 0, "duck_inv", 0)
-    p.connect("wet_mul", 0, "duck_mul", 0)
+    # §3.2 envelope-shaped send: the wet level follows its own decay envelope on
+    # top of the static send, so effects bloom after the transient rather than
+    # sitting at a fixed depth. wflr is the floor the envelope rides above.
+    p.sig("adsr_wet", "adsr~ 5 400 0.25 200", 5)
+    p.sig("wenv_amt", "*~ 0.65", 2)
+    p.sig("wenv_floor", "+~ 0.35", 2)
+    p.sig("wenv_mul", "*~ 1.", 2)
+    p.connect("route_note", note_params.index("trig"), "adsr_wet", 0)
+    p.connect("route_synth", synth_params.index("wdec"), "adsr_wet", 2)
+    p.connect("adsr_wet", 0, "wenv_amt", 0)
+    p.connect("route_synth", synth_params.index("wamt"), "wenv_amt", 1)
+    p.connect("wenv_amt", 0, "wenv_floor", 0)
+    p.connect("route_synth", synth_params.index("wflr"), "wenv_floor", 1)
+    p.connect("wet_mul", 0, "wenv_mul", 0)
+    p.connect("wenv_floor", 0, "wenv_mul", 1)
+
+    p.connect("wenv_mul", 0, "duck_mul", 0)
     p.connect("duck_inv", 0, "duck_mul", 1)
     p.connect("duck_mul", 0, "fb_sum", 0)
     p.connect("fb_sum", 0, "tapin", 0)
@@ -424,8 +499,30 @@ def build():
     p.connect("fb_damp", 0, "fb_mul", 0)
     p.connect("route_synth", synth_params.index("fb"), "fb_mul", 1)
     p.connect("fb_mul", 0, "fb_sum", 1)
-    p.connect("route_synth", synth_params.index("dly"), "tapout", 0)
-    p.connect("route_synth", synth_params.index("dly2"), "tapout", 1)
+    # §3.2 diffusion: the two taps are driven at signal rate through slow,
+    # mutually-detuned LFOs. A few ms of wander smears repeats into something
+    # that reads as space instead of a metronomic echo; dmod scales the depth
+    # with the Wet macro. tapout~ interpolates, so the taps stay glitch-free.
+    p.sig("dly_sig", "sig~ 380.", 1)
+    p.sig("dly2_sig", "sig~ 500.", 1)
+    p.sig("lfo1", "cycle~ 0.19", 2)
+    p.sig("lfo2", "cycle~ 0.27", 2)
+    p.sig("mod1", "*~ 0.", 2)
+    p.sig("mod2", "*~ 0.", 2)
+    p.sig("dly_mod", "+~", 2)
+    p.sig("dly2_mod", "+~", 2)
+    p.connect("route_synth", synth_params.index("dly"), "dly_sig", 0)
+    p.connect("route_synth", synth_params.index("dly2"), "dly2_sig", 0)
+    p.connect("lfo1", 0, "mod1", 0)
+    p.connect("lfo2", 0, "mod2", 0)
+    p.connect("route_synth", synth_params.index("dmod"), "mod1", 1)
+    p.connect("route_synth", synth_params.index("dmod"), "mod2", 1)
+    p.connect("dly_sig", 0, "dly_mod", 0)
+    p.connect("mod1", 0, "dly_mod", 1)
+    p.connect("dly2_sig", 0, "dly2_mod", 0)
+    p.connect("mod2", 0, "dly2_mod", 1)
+    p.connect("dly_mod", 0, "tapout", 0)
+    p.connect("dly2_mod", 0, "tapout", 1)
 
     # ---------------------------------------------------------------- output stage
     # §3.4 low-end stereo safety: dry + sub stay centered, only the wet taps differ L/R
