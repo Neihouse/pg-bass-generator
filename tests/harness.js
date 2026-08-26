@@ -182,19 +182,40 @@ test("pitches stay in-scale (natural minor gravity field)", function () {
   });
 });
 
-test("accents capped near 35% of onsets", function () {
-  var sb = makeSandbox();
-  call(sb, "dump");
-  var d = lastDump(sb);
-  var onsets = 0, accents = 0;
-  for (var i = 0; i < d.phrase.onsets.length; i++) {
-    if (d.phrase.onsets[i]) {
-      onsets++;
-      if (d.phrase.accents[i]) accents++;
+// §1.8 — the cap is 35% of onsets, and the only thing allowed to exceed it is
+// the bar template itself: downbeat accents are structural and never stripped.
+// Sampled across every groove and through mutation, since the accent layer is
+// redrawn on mutation and by the Accent button.
+test("accents stay capped at 35% of onsets, downbeats aside", function () {
+  var worst = 0, worstWhere = "";
+  for (var g = 0; g < 7; g++) {
+    var sb = makeSandbox();
+    call(sb, "groove", g);
+    call(sb, "novelty", 0.9);
+    for (var trial = 0; trial < 20; trial++) {
+      if (trial % 2) call(sb, "Accent"); else call(sb, "Mutate");
+      tickSteps(sb, 16);
+      call(sb, "dump");
+      var d = lastDump(sb);
+      var onsets = 0, accents = 0, downbeats = 0;
+      for (var i = 0; i < d.phrase.onsets.length; i++) {
+        if (!d.phrase.onsets[i]) continue;
+        onsets++;
+        if (d.phrase.accents[i]) { accents++; if (i % 16 === 0) downbeats++; }
+      }
+      assert(onsets > 0, "no onsets");
+      var cap = Math.max(1, Math.floor(onsets * 0.35));
+      assert(accents <= Math.max(cap, downbeats),
+        "groove " + g + ": " + accents + " accents over " + onsets +
+        " onsets (cap " + cap + ", " + downbeats + " structural downbeats)");
+      if (accents / onsets > worst) {
+        worst = accents / onsets;
+        worstWhere = "groove " + g + " " + accents + "/" + onsets;
+      }
     }
   }
-  assert(onsets > 0, "no onsets");
-  assert(accents / onsets <= 0.45, "accent ratio too high: " + (accents / onsets).toFixed(2));
+  // and the excess is genuinely rare — a dense phrase never runs hot
+  assert(worst <= 0.5, "accent ratio ran away: " + worst.toFixed(2) + " at " + worstWhere);
 });
 
 // ---------------------------------------------------------------- rhythm (§1.3)
@@ -338,6 +359,126 @@ test("max 6 consecutive onsets (rest logic)", function () {
     }
     assert(worst <= 7, "consecutive-onset run too long: " + worst);
   }
+});
+
+// a phrase sampler: fresh identities from one sandbox. Reseed derives its seed
+// from Date.now(), so the fake clock has to move or every draw is the same phrase.
+function samplePhrases(sb, n, fn) {
+  for (var i = 0; i < n; i++) {
+    sb.__state.advance(101 + i * 7);
+    call(sb, "Reseed");
+    call(sb, "dump");
+    fn(lastDump(sb).phrase);
+  }
+}
+
+// §1.4 — the phrase has to breathe before it restates. The last beat of the
+// last bar is where the ear expects the turnaround, so it gives steps back.
+test("phrase-end silence bias opens the last beat of the phrase", function () {
+  [1, 2, 4].forEach(function (plenIdx, i) {
+    var bars = [1, 2, 4][i];
+    var sb = makeSandbox();
+    call(sb, "plen", i);
+    call(sb, "groove", 1);
+    tickSteps(sb, bars * 16 + 4);   // let the length change land
+    var beat = [], k;
+    for (k = 0; k < 4 * bars; k++) beat[k] = 0;
+    var phrases = 0;
+    samplePhrases(sb, 60, function (p) {
+      if (p.bars !== bars) return;
+      phrases++;
+      for (var s = 0; s < p.onsets.length; s++) if (p.onsets[s]) beat[Math.floor(s / 4)]++;
+    });
+    assert(phrases > 20, "not enough " + bars + "-bar phrases sampled: " + phrases);
+    var lastBeat = beat[4 * bars - 1] / phrases;
+    var rest = 0;
+    for (k = 0; k < 4 * bars - 1; k++) rest += beat[k];
+    rest = rest / (4 * bars - 1) / phrases;
+    assert(lastBeat < rest * 0.85,
+      bars + "-bar phrase does not leave space at the end: " +
+      lastBeat.toFixed(2) + " onsets on the last beat vs " + rest.toFixed(2) + " elsewhere");
+    assert(lastBeat > 0.2, bars + "-bar phrase went silent at the end instead of thinning");
+  });
+});
+
+// §1.4 — a gap is preferred right after a syncopation: once the figure has
+// pushed on the "a", the next downbeat is more likely to be left open.
+test("a syncopated push biases the following beat toward a gap", function () {
+  var sb = makeSandbox();
+  call(sb, "groove", 2); // syncopated
+  var afterPush = 0, afterPushN = 0, plain = 0, plainN = 0;
+  samplePhrases(sb, 120, function (p) {
+    for (var s = 4; s < p.onsets.length; s += 4) {
+      if (p.onsets[s - 1]) { afterPushN++; if (p.onsets[s]) afterPush++; }
+      else { plainN++; if (p.onsets[s]) plain++; }
+    }
+  });
+  assert(afterPushN > 100 && plainN > 100, "not enough samples: " + afterPushN + "/" + plainN);
+  var a = afterPush / afterPushN, b = plain / plainN;
+  assert(a < b - 0.05,
+    "a push on the 'a' did not open the next beat: " +
+    a.toFixed(2) + " after a push vs " + b.toFixed(2) + " otherwise");
+});
+
+// §1.4 — downbeat rest bias as a bipolar user control: below centre the bass
+// answers the kick, above it lands with the kick.
+test("Interlock moves the bass on and off the kick", function () {
+  function quarterRate(v) {
+    var sb = makeSandbox();
+    call(sb, "groove", 2); // syncopated: has room to move in both directions
+    call(sb, "interlock", v);
+    var hit = 0, n = 0;
+    samplePhrases(sb, 60, function (p) {
+      for (var s = 0; s < p.onsets.length; s += 4) { n++; if (p.onsets[s]) hit++; }
+    });
+    return hit / n;
+  }
+  var off = quarterRate(0), mid = quarterRate(0.5), on = quarterRate(1);
+  assert(off < mid && mid < on,
+    "Interlock is not monotonic: " + off.toFixed(2) + " / " + mid.toFixed(2) + " / " + on.toFixed(2));
+  assert(on - off > 0.25,
+    "Interlock barely moves the bass: " + off.toFixed(2) + " to " + on.toFixed(2));
+});
+
+// §1.9 — the four slide directions are independently weightable, and the
+// groove tables actually spend those weights differently.
+test("slide direction weights differ by groove", function () {
+  function profile(gi) {
+    var sb = makeSandbox();
+    call(sb, "groove", gi);
+    var up = 0, dn = 0, rtn = 0, oct = 0, all = 0;
+    samplePhrases(sb, 80, function (p) {
+      var ons = [], s;
+      for (s = 0; s < p.onsets.length; s++) if (p.onsets[s]) ons.push(s);
+      for (var k = 1; k < ons.length; k++) {
+        var j = ons[k], i = ons[k - 1];
+        if (!p.slides[j]) continue;
+        all++;
+        if (Math.abs(p.pitches[j] - p.pitches[i]) === 12) oct++;
+        if (k > 1 && p.pitches[j] === p.pitches[ons[k - 2]]) rtn++;
+        if (p.pitches[j] > p.pitches[i]) up++;
+        else if (p.pitches[j] < p.pitches[i]) dn++;
+      }
+    });
+    assert(all > 40, "groove " + gi + " produced too few slides: " + all);
+    return { up: up / all, dn: dn / all, rtn: rtn / all, oct: oct / all };
+  }
+  var acidic = profile(4);    // up 1.5, dn 1.3, rtn 0.7, oct 1.4
+  var hypnotic = profile(6);  // up 1.0, dn 0.9, rtn 1.6, oct 0.3
+  assert(acidic.oct > hypnotic.oct,
+    "acidic should slide by the octave more than hypnotic: " +
+    acidic.oct.toFixed(2) + " vs " + hypnotic.oct.toFixed(2));
+  assert(hypnotic.rtn > acidic.rtn,
+    "hypnotic should favour returning slides: " +
+    hypnotic.rtn.toFixed(2) + " vs " + acidic.rtn.toFixed(2));
+  var driving = profile(3);   // up 1.4, dn 0.6
+  assert(driving.up > driving.dn,
+    "driving should slide upward more than down: " +
+    driving.up.toFixed(2) + " vs " + driving.dn.toFixed(2));
+  var broken = profile(5);    // up 0.9, dn 1.4
+  assert(broken.dn > broken.up,
+    "broken should slide downward more than up: " +
+    broken.dn.toFixed(2) + " vs " + broken.up.toFixed(2));
 });
 
 test("Mutate preserves length and register, changes id", function () {
@@ -558,7 +699,7 @@ test("state round-trips through the pattr list (save/reload)", function () {
   tickSteps(a, 96);
   var saved = lastState(a);
   assert(saved.length >= 20 + 8, "state list too short: " + saved.length);
-  assert(saved.length === 20 + saved[19] * 8,
+  assert(saved.length === 20 + saved[19] * 8 + 2,
     "state list length does not match its step count: " + saved.length + " vs " + saved[19]);
   saved.forEach(function (v, k) {
     assert(typeof v === "number" && isFinite(v), "non-numeric atom at " + k + ": " + v);
@@ -574,7 +715,7 @@ test("state round-trips through the pattr list (save/reload)", function () {
   call(b, "dump");
   var after = lastDump(b);
 
-  ["id", "parentId", "generation", "seed", "bars", "contour"].forEach(function (k) {
+  ["id", "parentId", "generation", "seed", "bars", "contour", "mode", "form"].forEach(function (k) {
     assert(after.phrase[k] === before.phrase[k], k + " lost in restore: " + after.phrase[k]);
   });
   ["onsets", "accents", "slides"].forEach(function (k) {
@@ -752,38 +893,329 @@ test("novelty budget gates timbre and wet drift, not just notes", function () {
   assert(hi > 0.02, "timbre/wet never drift even at full novelty");
 });
 
-test("filter mode, nonlinearity and shelf track groove and squelch", function () {
-  function last(sb, sel) {
-    var m = collect(sb, 0, sel);
-    assert(m.length > 0, "no " + sel + " emitted");
-    return m[m.length - 1][1];
-  }
-  // acidic (bp 0.30) at full squelch should open the bandpass path
+function lastParam(sb, sel) {
+  var m = collect(sb, 0, sel);
+  assert(m.length > 0, "no " + sel + " emitted");
+  return m[m.length - 1][1];
+}
+
+test("filter mode, nonlinearity and shelf track mode and squelch", function () {
+  var last = lastParam;
+  // acid mode at full squelch should open the bandpass path
   var acid = makeSandbox();
-  call(acid, "groove", 4);
+  call(acid, "fmode", 7); // acid
   call(acid, "squelch", 1);
   tickSteps(acid, 4);
   var bp = last(acid, "bpamt");
-  assert(bp > 0.15, "acidic groove did not blend in bandpass: " + bp);
+  assert(bp > 0.15, "acid mode did not blend in bandpass: " + bp);
   assert(Math.abs(last(acid, "lpamt") + bp - 1) < 1e-6, "lp/bp blend does not sum to unity");
   assert(last(acid, "nlin") > 1, "nonlinear drive never engaged");
   assert(last(acid, "shelf") > 0, "resonance-compensation shelf never engaged");
 
-  // restrained (bp 0.00) stays a pure lowpass whatever the squelch
+  // round mode (bp 0.00) stays a pure lowpass whatever the squelch
   var flat = makeSandbox();
-  call(flat, "groove", 0);
+  call(flat, "fmode", 1); // round
   call(flat, "squelch", 1);
   tickSteps(flat, 4);
-  assert(last(flat, "bpamt") === 0, "restrained groove should be pure lowpass");
+  assert(last(flat, "bpamt") === 0, "round mode should be pure lowpass");
   assert(last(flat, "lpamt") === 1, "lowpass amount should be unity with no bandpass");
 
   // the shelf compensates resonance: more squelch, more low-shelf lift
   var dry = makeSandbox();
-  call(dry, "groove", 4);
+  call(dry, "fmode", 7);
   call(dry, "squelch", 0);
   tickSteps(dry, 4);
   assert(last(dry, "shelf") < last(acid, "shelf"), "shelf does not track resonance");
   assert(last(acid, "shelf") <= 0.95, "shelf exceeded its clamp");
+});
+
+// §2.1 — the seven modes have to be seven audibly different filters, not seven
+// labels on one. Each is checked against the character DESIGN gives it.
+test("the seven filter modes are genuinely different filters", function () {
+  var NAMES = ["round", "wet", "squelch", "bite", "hollow", "rubber", "acid"];
+  var seen = {};
+  NAMES.forEach(function (name, i) {
+    var sb = makeSandbox();
+    call(sb, "fmode", i + 1);
+    tickSteps(sb, 8);
+    call(sb, "dump");
+    assert(lastDump(sb).mode === name, "mode " + (i + 1) + " reported as " + lastDump(sb).mode);
+    var fmul = collect(sb, 1, "fmul").map(function (m) { return m[1]; });
+    seen[name] = {
+      cut: lastParam(sb, "cutoff"), reso: lastParam(sb, "reso"),
+      envd: lastParam(sb, "envd"), drv: lastParam(sb, "drv"),
+      bp: lastParam(sb, "bpamt"),
+      acc: Math.max.apply(null, fmul.concat([0]))
+    };
+    var v = seen[name];
+    assert(v.cut > 20 && v.cut < 12000, name + " cutoff out of audio range: " + v.cut);
+    assert(v.reso >= 0 && v.reso <= 0.92, name + " resonance out of range: " + v.reso);
+    assert(v.drv > 0 && v.drv < 8, name + " drive out of range: " + v.drv);
+  });
+
+  // the characterisations DESIGN §2.1 gives each mode
+  assert(seen.round.cut < seen.bite.cut, "round should sit below bite in cutoff");
+  assert(seen.round.reso < seen.acid.reso, "round should be less resonant than acid");
+  assert(seen.acid.envd > seen.round.envd * 2, "acid should sweep far more than round");
+  assert(seen.bite.drv > seen.hollow.drv, "bite should drive harder than hollow");
+  assert(seen.hollow.bp > seen.round.bp, "hollow should be the most scooped");
+  assert(seen.round.bp === 0, "round should be a pure lowpass");
+
+  // accent coupling depth is itself a property of the mode (§2.1's vertical axis)
+  assert(seen.acid.acc > seen.round.acc,
+    "an accent should open acid further than round: " + seen.acid.acc + " vs " + seen.round.acc);
+
+  // decay: bite is short, hollow is long — read through fdec on the note outlet
+  function fdec(modeIdx) {
+    var sb = makeSandbox();
+    call(sb, "fmode", modeIdx);
+    tickSteps(sb, 8);
+    var m = collect(sb, 1, "fdec");
+    assert(m.length > 0, "no fdec emitted");
+    return m[m.length - 1][1];
+  }
+  assert(fdec(4) < fdec(5), "bite should decay faster than hollow");
+});
+
+// §1.10 — groove state weights filter mode affinity. Left on auto, a groove
+// should only ever speak in the modes its own table lists.
+test("groove state weights filter mode affinity", function () {
+  var AFFINITY = {
+    restrained: ["round", "rubber", "wet"],
+    rolling: ["wet", "rubber", "round", "squelch"],
+    syncopated: ["squelch", "bite", "wet", "hollow"],
+    driving: ["bite", "squelch", "round"],
+    acidic: ["acid", "squelch", "bite"],
+    broken: ["hollow", "bite", "rubber", "squelch"],
+    hypnotic: ["round", "rubber", "wet"]
+  };
+  var names = Object.keys(AFFINITY);
+  names.forEach(function (gname, gi) {
+    var got = {};
+    var sb = makeSandbox();
+    call(sb, "groove", gi);
+    call(sb, "novelty", 0.9);
+    for (var trial = 0; trial < 40; trial++) {
+      call(sb, "Reseed");         // a fresh identity draws a fresh mode
+      tickSteps(sb, 4);
+      call(sb, "dump");
+      var mode = lastDump(sb).mode;
+      assert(AFFINITY[gname].indexOf(mode) >= 0,
+        gname + " picked " + mode + ", which is not in its affinity set");
+      got[mode] = true;
+    }
+    assert(Object.keys(got).length >= 2,
+      gname + " only ever picked one mode; the affinity weights are not being sampled");
+  });
+
+  // and the menu overrides the affinity outright
+  var forced = makeSandbox();
+  call(forced, "groove", 0);   // restrained has no acid affinity at all
+  call(forced, "fmode", 7);
+  call(forced, "dump");
+  assert(lastDump(forced).mode === "acid", "the Mode menu did not override the groove affinity");
+});
+
+// ---------------------------------------------------------------- sub, saturation, stereo
+
+// §2.5 — the sub is its own voice: an octave choice, its own saturation with
+// makeup gain, and a duck that gets out of the way of a resonant peak.
+test("sub octave, saturation and resonant-peak duck", function () {
+  function synth(sb, sel) { return lastParam(sb, sel); }
+
+  // -1 folds into 32.7-61.7 Hz (MIDI 24-35); -2 into 16.4-30.9 Hz (MIDI 12-23)
+  [[0, 24, 35], [1, 12, 23]].forEach(function (row) {
+    var sb = makeSandbox();
+    call(sb, "suboct", row[0]);
+    tickSteps(sb, 64);
+    var sp = collect(sb, 1, "spitch");
+    assert(sp.length > 8, "no sub pitches emitted");
+    sp.forEach(function (m) {
+      assert(m[1] >= row[1] && m[1] <= row[2],
+        "sub octave " + row[0] + " emitted MIDI " + m[1] + ", outside " + row[1] + "-" + row[2]);
+    });
+  });
+
+  // sub saturation drives its own stage, and the makeup gain compensates for it
+  var dry = makeSandbox(), hot = makeSandbox();
+  call(dry, "subsat", 0);
+  call(hot, "subsat", 1);
+  tickSteps(dry, 4); tickSteps(hot, 4);
+  assert(synth(hot, "subdrv") > synth(dry, "subdrv") * 2,
+    "SubSat does not drive the sub saturator");
+  assert(synth(hot, "subgain") < synth(dry, "subgain"),
+    "sub makeup gain does not compensate for the added drive");
+  assert(synth(dry, "subgain") <= 1.0001 && synth(hot, "subgain") > 0.5,
+    "sub makeup gain out of range: " + synth(hot, "subgain"));
+
+  // and the duck only engages once resonance is actually peaking
+  var calm = makeSandbox(), peak = makeSandbox();
+  call(calm, "squelch", 0); call(peak, "squelch", 1);
+  tickSteps(calm, 4); tickSteps(peak, 4);
+  assert(synth(calm, "subduck") === 0, "sub ducks with no resonant peak to duck");
+  assert(synth(peak, "subduck") > 0.1,
+    "sub does not duck under a resonant peak: " + synth(peak, "subduck"));
+  assert(synth(peak, "subduck") <= 0.45, "sub duck exceeded its clamp");
+});
+
+// §2.4 — saturation is dynamic, not a static setting: it reads velocity, and
+// it is asymmetric, so it generates even harmonics rather than only odd.
+test("saturation asymmetry tracks velocity and accent", function () {
+  var sb = makeSandbox();
+  call(sb, "drive", 0.8);
+  tickSteps(sb, 128);
+  var asym = collect(sb, 1, "asym").map(function (m) { return m[1]; });
+  // pair against "note", not "trig": a tied step glides instead of retriggering,
+  // so trig is not emitted for every sounding step and the indices would slip
+  var vel = collect(sb, 1, "note").map(function (m) { return m[2]; });
+  assert(asym.length > 16, "no asymmetry emitted per note");
+  assert(asym.length === vel.length, "asymmetry and note events are not 1:1");
+  var lo = Math.min.apply(null, asym), hi = Math.max.apply(null, asym);
+  assert(lo >= 0 && hi <= 0.6, "asymmetry out of range: " + lo + " to " + hi);
+  assert(hi > lo + 0.02, "asymmetry is static, not velocity-linked: " + lo + " to " + hi);
+
+  // louder notes bend the transfer curve further
+  var loud = 0, loudN = 0, soft = 0, softN = 0;
+  for (var i = 0; i < asym.length; i++) {
+    if (vel[i] >= 108) { loud += asym[i]; loudN++; }
+    else if (vel[i] <= 90) { soft += asym[i]; softN++; }
+  }
+  assert(loudN > 2 && softN > 2, "not enough loud/soft notes to compare");
+  assert(loud / loudN > soft / softN,
+    "asymmetry does not follow velocity: " + (loud / loudN).toFixed(3) +
+    " loud vs " + (soft / softN).toFixed(3) + " soft");
+
+  // and Drive sets the depth of the whole effect
+  var quiet = makeSandbox();
+  call(quiet, "drive", 0);
+  tickSteps(quiet, 128);
+  var qa = collect(quiet, 1, "asym").map(function (m) { return m[1]; });
+  assert(Math.max.apply(null, qa) < lo, "Drive does not scale the asymmetry");
+});
+
+// §3.4 — stereo is controlled, not incidental: the low end stays mono and the
+// wet spread stays correlation-safe.
+test("stereo width and mono-below frequency", function () {
+  var narrow = makeSandbox(), wide = makeSandbox();
+  call(narrow, "width", 0);
+  call(wide, "width", 1);
+  tickSteps(narrow, 4); tickSteps(wide, 4);
+
+  var w0 = lastParam(narrow, "width"), w1 = lastParam(wide, "width");
+  assert(w0 === 0, "Width 0 should be dead mono, got " + w0);
+  assert(w1 > 1, "Width 1 should spread past unity, got " + w1);
+  assert(w1 <= 1.4, "width exceeded the correlation-safe ceiling: " + w1);
+
+  // narrower image, higher mono-below crossover: the low end never wanders
+  var m0 = lastParam(narrow, "monof"), m1 = lastParam(wide, "monof");
+  assert(m0 > m1, "mono-below frequency does not track width: " + m0 + " vs " + m1);
+  assert(m1 >= 200 && m0 <= 800,
+    "mono-below frequency out of musical range: " + m1 + " to " + m0);
+});
+
+// ---------------------------------------------------------------- per-layer freeze (§5.3)
+
+test("freeze rhythm, pitch and timbre hold their own layer only", function () {
+  function seq(p, key) { return p[key].join(","); }
+  function churn(sb) {
+    call(sb, "novelty", 0.9);
+    for (var i = 0; i < 6; i++) { call(sb, "Mutate"); tickSteps(sb, 32); }
+    call(sb, "dump");
+    return lastDump(sb).phrase;
+  }
+
+  // rhythm frozen: the figure survives, the notes move
+  var r = makeSandbox();
+  call(r, "dump");
+  var r0 = lastDump(r).phrase;
+  call(r, "frzr", 1);
+  var r1 = churn(r);
+  assert(seq(r1, "onsets") === seq(r0, "onsets"), "frozen rhythm changed under mutation");
+  assert(seq(r1, "pitches") !== seq(r0, "pitches"), "nothing else moved; the test proves nothing");
+
+  // pitch frozen: every sounding step keeps the pitch it had, even though the
+  // rhythm is free to move underneath it
+  var p = makeSandbox();
+  call(p, "dump");
+  var p0 = lastDump(p).phrase;
+  call(p, "frzp", 1);
+  var p1 = churn(p);
+  var kept = 0, moved = 0, s;
+  for (s = 0; s < p1.onsets.length; s++) {
+    if (!p1.onsets[s] || !p0.onsets[s]) continue;
+    if (p1.pitches[s] === p0.pitches[s]) kept++; else moved++;
+  }
+  assert(kept > 0 && moved === 0,
+    "frozen pitch drifted on " + moved + " of " + (kept + moved) + " shared onsets");
+  // and new onsets still get a playable pitch rather than a hole
+  for (s = 0; s < p1.onsets.length; s++) {
+    if (p1.onsets[s]) {
+      assert(typeof p1.pitches[s] === "number" && p1.pitches[s] >= 12 && p1.pitches[s] <= 96,
+        "frozen pitch left step " + s + " unplayable: " + p1.pitches[s]);
+    }
+  }
+
+  // timbre frozen: the mode and the per-step timbre layer hold, and the slow
+  // drift that would colour them is paused too
+  var t = makeSandbox();
+  call(t, "novelty", 1);
+  call(t, "dump");
+  var t0 = lastDump(t), tp0 = t0.phrase;
+  call(t, "frzt", 1);
+  var t1 = churn(t);
+  call(t, "dump");
+  var td = lastDump(t);
+  assert(t1.mode === tp0.mode, "frozen timbre changed filter mode: " + tp0.mode + " to " + t1.mode);
+  assert(seq(t1, "timbres") === seq(tp0, "timbres"), "frozen timbre layer changed");
+  assert(td.slow.cut === t0.slow.cut && td.med.drv === t0.med.drv && td.fast.tim === t0.fast.tim,
+    "frozen timbre did not pause the chaos walks");
+  assert(seq(t1, "onsets") !== seq(tp0, "onsets") || seq(t1, "pitches") !== seq(tp0, "pitches"),
+    "nothing else moved; the test proves nothing");
+
+  // all three at once is a full hold that still lets probability play
+  var all = makeSandbox();
+  call(all, "dump");
+  var a0 = lastDump(all).phrase;
+  call(all, "frzr", 1); call(all, "frzp", 1); call(all, "frzt", 1);
+  var a1 = churn(all);
+  assert(seq(a1, "onsets") === seq(a0, "onsets") && seq(a1, "pitches") === seq(a0, "pitches") &&
+    a1.mode === a0.mode, "the three freezes together did not hold the phrase");
+});
+
+test("Accent and Slide regenerate one layer without touching the rest", function () {
+  var sb = makeSandbox();
+  call(sb, "dump");
+  var before = lastDump(sb).phrase;
+  var onsets = before.onsets.join(","), pitches = before.pitches.join(",");
+
+  var changedAcc = false, changedSld = false;
+  for (var i = 0; i < 12 && !(changedAcc && changedSld); i++) {
+    call(sb, "Accent");
+    call(sb, "dump");
+    var a = lastDump(sb).phrase;
+    assert(a.onsets.join(",") === onsets, "Accent moved the rhythm");
+    assert(a.pitches.join(",") === pitches, "Accent moved the pitches");
+    if (a.accents.join(",") !== before.accents.join(",")) changedAcc = true;
+    // velocity reads the accent layer, so it has to follow
+    for (var s = 0; s < a.onsets.length; s++) {
+      if (!a.onsets[s]) continue;
+      assert(a.vels[s] >= 1 && a.vels[s] <= 127, "Accent produced velocity " + a.vels[s]);
+      if (a.accents[s]) assert(a.vels[s] >= 100, "accented step is not louder: " + a.vels[s]);
+    }
+
+    call(sb, "Slide");
+    call(sb, "dump");
+    var b = lastDump(sb).phrase;
+    assert(b.onsets.join(",") === onsets, "Slide moved the rhythm");
+    assert(b.pitches.join(",") === pitches, "Slide moved the pitches");
+    if (b.slides.join(",") !== before.slides.join(",")) changedSld = true;
+    // a tie holds its note through the next step, so its gate has to be over 1
+    for (var k = 0; k < b.onsets.length; k++) {
+      if (b.onsets[k] && b.slides[k]) assert(b.gates[k] > 1, "slid step " + k + " has a short gate");
+    }
+  }
+  assert(changedAcc, "Accent never redrew the accent layer");
+  assert(changedSld, "Slide never redrew the slide layer");
 });
 
 test("wet envelope and diffusion parameters stay in range", function () {
@@ -852,8 +1284,10 @@ test("ties become overlapping MIDI notes, not held ones", function () {
 
     var evs = vm.runInContext("noteEvents(phrase)", sb);
     var a = null, b = null;
+    // round, don't floor: a rushed onset starts fractionally *before* its own
+    // step, so flooring files it under the previous step and picks the wrong event
     evs.forEach(function (e, k) {
-      if (Math.floor(e.start / 0.25 + 0.001) === tie) { a = e; b = evs[k + 1]; }
+      if (a === null && Math.round(e.start / 0.25) === tie) { a = e; b = evs[k + 1]; }
     });
     assert(a && b, "tie step " + tie + " missing from the note events");
     assert(a.start + a.dur > b.start,
@@ -895,6 +1329,84 @@ test("captured note events reproduce the phrase in beats", function () {
     });
     assert(early.length > 0, "phrase has rushed steps but no note captured ahead of its beat");
   }
+});
+
+// ---------------------------------------------------------------- core <-> patch contract
+
+// The core and the patch are built separately, so nothing but this test stops a
+// new outlet(0, "…") in pg-core.js from landing on an unrouted [route] outlet
+// and silently doing nothing inside Live.
+test("every selector the core emits is routed in the built device", function () {
+  var patch = path.join(__dirname, "..", "device", "PG Bass Generator.maxpat");
+  assert(fs.existsSync(patch), "device not built; run scripts/build_device.py");
+  var boxes = JSON.parse(fs.readFileSync(patch, "utf8")).patcher.boxes;
+  var routed = {}, routeCount = 0;
+  boxes.forEach(function (b) {
+    var t = b.box.text;
+    if (!t || t.indexOf("route ") !== 0) return;
+    routeCount++;
+    t.split(/\s+/).slice(1).forEach(function (sel) { routed[sel] = true; });
+  });
+  assert(routeCount >= 3, "expected the synth/note/display routes, found " + routeCount);
+
+  // exercise everything that emits: startup, every macro, every button
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  ["novelty", "density", "interlock", "chunk", "squelch", "drive", "cutoff",
+   "decay", "sub", "subsat", "wet", "width"].forEach(function (m) { call(sb, m, 0.7); });
+  ["fmode", "suboct", "groove", "root", "plen", "lock", "frzr", "frzp", "frzt"]
+    .forEach(function (m) { call(sb, m, 1); });
+  call(sb, "lock", 0);
+  ["frzr", "frzp", "frzt"].forEach(function (m) { call(sb, m, 0); });
+  tickSteps(sb, 128);
+  ["Mutate", "Return", "Reseed", "Rhythm", "Pitch", "Accent", "Slide"]
+    .forEach(function (b) { call(sb, b); });
+  tickSteps(sb, 64);
+  call(sb, "dump");
+
+  var emitted = {};
+  [0, 1, 2].forEach(function (o) {
+    sb.__state.out[o].forEach(function (m) {
+      if (typeof m[0] === "string") emitted[m[0]] = true;
+    });
+  });
+  Object.keys(emitted).forEach(function (sel) {
+    assert(routed[sel], "the core emits \"" + sel + "\" but the patch does not route it");
+  });
+  // and nothing in the patch is waiting on a selector the core never sends
+  Object.keys(routed).forEach(function (sel) {
+    assert(emitted[sel], "the patch routes \"" + sel + "\" but the core never emits it");
+  });
+});
+
+// the other half of the same contract: every control in the patch has to reach
+// a handler that exists, or the dial turns and nothing happens
+test("every UI control in the built device reaches a core handler", function () {
+  var patch = path.join(__dirname, "..", "device", "PG Bass Generator.maxpat");
+  var boxes = JSON.parse(fs.readFileSync(patch, "utf8")).patcher.boxes;
+  var sb = makeSandbox();
+  var msgs = [], seen = {};
+  boxes.forEach(function (b) {
+    var t = b.box.text;
+    if (!t) return;
+    if (t.indexOf("prepend ") === 0) {          // dials, menus, toggles
+      var m = t.split(/\s+/)[1];
+      if (m !== "set" && m !== "Restore" && m !== "pos" && !seen[m]) { seen[m] = 1; msgs.push([m, 0.5]); }
+    } else if (b.box.maxclass === "message" && b.box.presentation === 1 &&
+               /^[A-Z][A-Za-z]+$/.test(t) && !seen[t]) {   // the button row
+      seen[t] = 1; msgs.push([t, null]);
+    }
+  });
+  assert(msgs.length >= 20, "found only " + msgs.length + " controls to check");
+  msgs.forEach(function (row) {
+    var fn;
+    try { fn = vm.runInContext("typeof " + row[0], sb); }
+    catch (e) { fn = "missing"; }
+    assert(fn === "function",
+      "the patch sends \"" + row[0] + "\" but pg-core.js has no such handler");
+    if (row[1] === null) call(sb, row[0]);
+    else call(sb, row[0], row[1]);
+  });
 });
 
 // ----------------------------------------------------------------

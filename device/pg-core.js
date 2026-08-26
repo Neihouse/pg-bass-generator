@@ -31,39 +31,78 @@ var ANCHOR = { 0: 1, 7: 1, 10: 1, 12: 1, 19: 1, 22: 1, 24: 1 }; // §1.5
 // contour names, ordered — the index is what gets serialized in the saved state
 var CONTOURS = ["repeat", "pedal", "neighbor", "arch", "ascending", "descending", "leaprtn"];
 
+// §2.1 filter modes. A mode is a coordinated recipe, not one more knob: the
+// macros say where the player is standing, the mode says what kind of filter
+// they are playing. Every value is an offset or multiplier applied on top of the
+// Cutoff / Squelch / Drive / Decay macros, so those knobs still do exactly what
+// they say — the mode moves the centre they move around.
+//   cut = cutoff centre offset in octaves     res = resonance offset
+//   drv = drive multiplier                    env = filter env depth multiplier
+//   dec = filter decay multiplier             bp  = lowpass/bandpass blend
+//   acc = how far an accent opens the filter (§2.1's coupling depth)
+var MODES = {
+  round:   { cut: -0.55, res: -0.16, drv: 0.80, env: 0.55, dec: 1.00, bp: 0.00, acc: 1.25 },
+  wet:     { cut:  0.00, res:  0.00, drv: 0.85, env: 0.90, dec: 1.05, bp: 0.10, acc: 1.35 },
+  squelch: { cut: -0.10, res:  0.18, drv: 1.15, env: 1.55, dec: 0.85, bp: 0.12, acc: 1.85 },
+  bite:    { cut:  0.75, res:  0.02, drv: 1.55, env: 1.00, dec: 0.55, bp: 0.18, acc: 1.60 },
+  hollow:  { cut:  0.10, res: -0.12, drv: 0.75, env: 0.60, dec: 1.70, bp: 0.34, acc: 1.20 },
+  rubber:  { cut: -0.15, res:  0.04, drv: 1.00, env: 1.05, dec: 1.45, bp: 0.16, acc: 1.40 },
+  acid:    { cut:  0.15, res:  0.26, drv: 1.45, env: 1.70, dec: 0.60, bp: 0.22, acc: 2.00 }
+};
+// ordered — the index is what the Mode menu sends and what the state serializes
+var MODE_NAMES = ["round", "wet", "squelch", "bite", "hollow", "rubber", "acid"];
+
+// §1.9 default directional slide weights, overridden per groove below
+var SDIR = { up: 1, dn: 1, rtn: 1, oct: 1 };
+
 // §1.10 groove states — each moves many parameters together.
 // push  = how far the groove leans forward (fraction of a step, applied as rush
 //         on accents and drag on ghosts); pick = anticipation probability per
-//         downbeat; bp = lowpass/bandpass blend (§2.3); frz = probability of a
-//         repetition freeze.
+//         downbeat; frz = probability of a repetition freeze.
 // fam   = which rhythmic family (§1.3a) this groove draws its cells from.
 // motif = probability that beats 3-4 restate beats 1-2 within the bar.
+// modes = §2.1 filter-mode affinity (§1.10: groove state weights mode selection).
+// sdir  = §1.9 which direction this groove likes to glide.
 var GROOVES = [
   { name: "restrained", dens: 0.35, off: 0.20, gate: 0.50, acc: 0.15, sld: 0.08, mut: 0.4, swing: 0.02,
-    push: 0.025, pick: 0.12, bp: 0.00, frz: 0.20, fam: "deep", motif: 0.55,
+    push: 0.025, pick: 0.12, frz: 0.20, fam: "deep", motif: 0.55,
+    modes: { round: 4, rubber: 2, wet: 1 },
+    sdir: { up: 1.0, dn: 0.8, rtn: 1.4, oct: 0.4 },
     contours: { repeat: 3, pedal: 3, neighbor: 2, arch: 1, descending: 1 } },
   // rolling and syncopated share the psy vocabulary and are separated by how
   // they sit against the kick: rolling rides with it, syncopated answers it
   { name: "rolling",    dens: 0.55, off: 0.62, gate: 0.45, acc: 0.30, sld: 0.15, mut: 0.5, swing: 0.07,
-    push: 0.050, pick: 0.35, bp: 0.05, frz: 0.18, fam: "psy", motif: 0.70, kick: 0.63,
+    push: 0.050, pick: 0.35, frz: 0.18, fam: "psy", motif: 0.70, kick: 0.63,
+    modes: { wet: 3, rubber: 3, round: 2, squelch: 1 },
+    sdir: { up: 1.3, dn: 0.9, rtn: 1.2, oct: 0.6 },
     contours: { repeat: 3, pedal: 2, leaprtn: 2, arch: 1, neighbor: 1 } },
   { name: "syncopated", dens: 0.55, off: 0.92, gate: 0.55, acc: 0.45, sld: 0.25, mut: 0.9, swing: 0.10,
-    push: 0.045, pick: 0.45, bp: 0.15, frz: 0.10, fam: "psy", motif: 0.55, kick: 0.37,
+    push: 0.045, pick: 0.45, frz: 0.10, fam: "psy", motif: 0.55, kick: 0.37,
+    modes: { squelch: 3, bite: 2, wet: 2, hollow: 1 },
+    sdir: { up: 1.1, dn: 1.2, rtn: 1.0, oct: 0.8 },
     contours: { neighbor: 2, leaprtn: 2, arch: 2, repeat: 1, ascending: 1 } },
   { name: "driving",    dens: 0.80, off: 0.25, gate: 0.60, acc: 0.50, sld: 0.12, mut: 0.5, swing: 0.03,
-    push: 0.080, pick: 0.25, bp: 0.05, frz: 0.22, fam: "deep", motif: 0.75,
+    push: 0.080, pick: 0.25, frz: 0.22, fam: "deep", motif: 0.75,
+    modes: { bite: 3, squelch: 2, round: 2 },
+    sdir: { up: 1.4, dn: 0.6, rtn: 0.9, oct: 0.5 },
     contours: { repeat: 3, pedal: 2, ascending: 1, descending: 1 } },
   { name: "acidic",     dens: 0.65, off: 0.55, gate: 0.50, acc: 0.60, sld: 0.50, mut: 0.9, swing: 0.05,
-    push: 0.060, pick: 0.35, bp: 0.30, frz: 0.08, fam: "acid", motif: 0.80,
+    push: 0.060, pick: 0.35, frz: 0.08, fam: "acid", motif: 0.80,
+    modes: { acid: 5, squelch: 3, bite: 1 },
+    sdir: { up: 1.5, dn: 1.3, rtn: 0.7, oct: 1.4 },
     contours: { leaprtn: 3, neighbor: 2, ascending: 2, arch: 1, repeat: 1 } },
   { name: "broken",     dens: 0.50, off: 0.60, gate: 0.55, acc: 0.55, sld: 0.25, mut: 1.3, swing: 0.09,
-    push: 0.035, pick: 0.50, bp: 0.20, frz: 0.06, fam: "broken", motif: 0.30,
+    push: 0.035, pick: 0.50, frz: 0.06, fam: "broken", motif: 0.30,
+    modes: { hollow: 3, bite: 2, rubber: 2, squelch: 1 },
+    sdir: { up: 0.9, dn: 1.4, rtn: 0.8, oct: 1.0 },
     contours: { arch: 2, leaprtn: 2, descending: 2, neighbor: 1, ascending: 1 } },
   // hypnotic shares rolling's psy vocabulary; what separates them is that it says
   // less and changes less — sparser cells, a near-certain two-beat motif, and the
   // lowest mutation rate of any groove
   { name: "hypnotic",   dens: 0.45, off: 0.42, gate: 0.40, acc: 0.12, sld: 0.10, mut: 0.15, swing: 0.04,
-    push: 0.018, pick: 0.15, bp: 0.00, frz: 0.35, fam: "psy", motif: 0.85,
+    push: 0.018, pick: 0.15, frz: 0.35, fam: "psy", motif: 0.85,
+    modes: { round: 3, rubber: 3, wet: 2 },
+    sdir: { up: 1.0, dn: 0.9, rtn: 1.6, oct: 0.3 },
     contours: { repeat: 4, pedal: 3, neighbor: 1 } }
 ];
 
@@ -73,7 +112,12 @@ var GROOVES = [
 var P = {
   density: 0.5, novelty: 0.35, chunk: 0.55, squelch: 0.5, drive: 0.35,
   cutoff: 0.45, decay: 0.5, sub: 0.6, wet: 0.3,
-  groove: 1, root: 36, bars: 2, lock: 0
+  interlock: 0.5,          // §1.4 bipolar downbeat rest bias (0.5 = as the family)
+  subsat: 0.35, width: 0.6, // §2.5 sub saturation, §3.4 stereo width
+  groove: 1, root: 36, bars: 2,
+  fmode: 0,                // §2.1 filter mode: 0 = follow the groove, 1..7 = forced
+  suboct: 0,               // §2.5 sub octave: 0 = -1, 1 = -2
+  lock: 0, frzr: 0, frzp: 0, frzt: 0   // §5.3 global lock + per-layer freezes
 };
 
 var phrase = null;
@@ -149,10 +193,31 @@ function walkUpdate(v, range, rng) { // §4.2 bounded chaos random walk
 
 function grooveNow() { return GROOVES[P.groove] || GROOVES[1]; }
 
+// §2.1 / §1.10 — which filter mode is speaking right now. A phrase carries its
+// own mode so the timbre is part of phrase identity (§5.2) rather than a global
+// setting the phrase happens to be playing under; the Mode menu overrides it.
+function pickMode(rng, groove) {
+  var total = 0, key;
+  for (key in groove.modes) total += groove.modes[key];
+  var r = rng() * total;
+  for (key in groove.modes) { r -= groove.modes[key]; if (r <= 0) return key; }
+  return "round";
+}
+function modeName() {
+  if (P.fmode > 0) return MODE_NAMES[P.fmode - 1] || "round";
+  return (phrase && phrase.mode) || "round";
+}
+function modeOf() { return MODES[modeName()] || MODES.round; }
+function modeIdx(name) {
+  for (var i = 0; i < MODE_NAMES.length; i++) if (MODE_NAMES[i] === name) return i;
+  return 0;
+}
+
 function clonePhrase(p) {
   return {
     id: p.id, parentId: p.parentId, generation: p.generation,
     letter: p.letter, seed: p.seed, bars: p.bars, contour: p.contour, form: p.form,
+    mode: p.mode,
     onsets: p.onsets.slice(), gates: p.gates.slice(), pitches: p.pitches.slice(),
     accents: p.accents.slice(), slides: p.slides.slice(), probs: p.probs.slice(),
     timbres: p.timbres.slice(), wets: p.wets.slice(), micros: p.micros.slice(),
@@ -257,7 +322,8 @@ function writeCells(onsets, bar, cells) {
 
 // Density selects *denser cells* rather than raising every step's coin, so a
 // high Density reads as a busier figure instead of 16th-note mush.
-function pickCell(rng, fam, dens, off, beat, kick) {
+// prev is the cell on the beat before, or -1 at the start of a bar (§1.4).
+function pickCell(rng, fam, dens, off, beat, kick, prev) {
   var target = clamp(dens * 4, 0, 4);            // wanted onsets within this beat
   var pool = [], weights = [], total = 0, key;
   for (key in fam.cells) {
@@ -275,6 +341,10 @@ function pickCell(rng, fam, dens, off, beat, kick) {
     // two families that are meant to lock hardest to the kick got no bias at all.
     var lean = (2 * kick - 1) * (beat % 2 === 0 ? 1 : 0.5);
     w *= Math.pow(6, (c & 1) ? lean : -lean);
+    // §1.4 syncopated gap preference: a cell that ends on the "a" has already
+    // anticipated the next beat, so that beat wants to be a gap rather than a
+    // second attack — the hole is what makes the syncopation read as syncopation.
+    if (prev >= 0 && (prev & 8)) w *= (c & 1) ? 0.45 : 1.35;
     if (w <= 0) continue;
     pool.push(c); weights.push(w); total += w;
   }
@@ -287,14 +357,14 @@ function pickCell(rng, fam, dens, off, beat, kick) {
 // §1.3a one bar, with a two-beat motif repeat — the repeated two-beat figure is
 // the signature of this vocabulary.
 function genBar(rng, fam, dens, off, kick, motifP) {
-  var cells = [pickCell(rng, fam, dens, off, 0, kick),
-               pickCell(rng, fam, dens, off, 1, kick)];
+  var cells = [pickCell(rng, fam, dens, off, 0, kick, -1)];
+  cells[1] = pickCell(rng, fam, dens, off, 1, kick, cells[0]);
   if (rng() < motifP) {                          // beats 3-4 restate beats 1-2
     cells[2] = cells[0];
     cells[3] = cells[1];
   } else {
-    cells[2] = pickCell(rng, fam, dens, off, 2, kick);
-    cells[3] = pickCell(rng, fam, dens, off, 3, kick);
+    cells[2] = pickCell(rng, fam, dens, off, 2, kick, cells[1]);
+    cells[3] = pickCell(rng, fam, dens, off, 3, kick, cells[2]);
   }
   // the bar has to start somewhere the ear can find it; a wholly empty first
   // beat belongs to broken, which is defined by exactly that
@@ -310,8 +380,8 @@ function varyCells(rng, cells, fam, dens, off, kick, strength) {
   for (var i = 0; i < ops; i++) {
     var beat = strength >= 2 ? Math.floor(rng() * 4) : (rng() < 0.75 ? 3 : 2);
     var r = rng();
-    if (r < 0.4) {
-      out[beat] = pickCell(rng, fam, dens, off, beat, kick);    // swap the cell
+    if (r < 0.4) {                                              // swap the cell
+      out[beat] = pickCell(rng, fam, dens, off, beat, kick, beat > 0 ? out[beat - 1] : -1);
     } else if (r < 0.7) {
       out[beat] = out[beat] | (1 << Math.floor(rng() * 4));     // add a 16th
     } else if (r < 0.9) {
@@ -347,12 +417,31 @@ function repairRhythm(onsets) {
   return onsets;
 }
 
-function layOutForm(rng, bars, form, A, fam, dens, off, kick) {
+// §1.4 phrase-end silence bias. The last beat of the phrase gives ground back so
+// the loop point can breathe and the restatement lands as a restatement. Only the
+// late 16ths go and never the beat itself, so the motif is still recognisable
+// across the turnaround — this is a rest bias, not a truncation.
+function endSpace(rng, onsets, bars, amount) {
+  if (amount <= 0) return onsets;
+  var base = (bars - 1) * STEPS_PER_BAR + 12, live = 0, s;
+  for (s = base; s < base + 4; s++) if (onsets[s]) live++;
+  if (live < 2) return onsets;                     // nothing to give back
+  for (s = base + 3; s > base && live > 1; s--) {
+    if (onsets[s] && rng() < amount) { onsets[s] = false; live--; }
+  }
+  return onsets;
+}
+
+// grooves that live on restatement give less ground back at the turnaround
+function endSpaceAmt(groove) { return 0.65 * (1 - groove.motif * 0.4); }
+
+function layOutForm(rng, bars, form, A, fam, dens, off, kick, groove) {
   var onsets = [];
   for (var b = 0; b < bars; b++) {
     var role = form.roles[b % form.roles.length];
     writeCells(onsets, b, role === 0 ? A : varyCells(rng, A, fam, dens, off, kick, role));
   }
+  endSpace(rng, onsets, bars, endSpaceAmt(groove));
   return repairRhythm(onsets);
 }
 
@@ -360,14 +449,19 @@ function layOutForm(rng, bars, form, A, fam, dens, off, kick) {
 // grooves drawing from the same vocabulary
 function famOf(groove) { return FAMILIES[groove.fam] || FAMILIES.psy; }
 function kickOf(groove) {
-  return typeof groove.kick === "number" ? groove.kick : famOf(groove).kick;
+  var k = typeof groove.kick === "number" ? groove.kick : famOf(groove).kick;
+  // §1.4 downbeat rest bias/avoidance as a bipolar control: 0.5 leaves the groove
+  // where its family put it, 0 pushes it to rest on the one and answer the kick,
+  // 1 pushes it to land on the one. It rides the same odds exponent as the family
+  // value, so the control and the table speak the same units.
+  return clamp(k + (P.interlock - 0.5) * 0.9, 0.02, 0.98);
 }
 
 function genRhythm(rng, bars, dens, groove) {
   var fam = famOf(groove), kick = kickOf(groove);
   var form = pickForm(rng, bars);
   var A = genBar(rng, fam, dens, groove.off, kick, groove.motif);
-  var onsets = layOutForm(rng, bars, form, A, fam, dens, groove.off, kick);
+  var onsets = layOutForm(rng, bars, form, A, fam, dens, groove.off, kick, groove);
   onsets.form = form.name;      // for the dump/display; not part of the step data
   return onsets;
 }
@@ -379,7 +473,7 @@ function mutateRhythm(rng, p, groove, dens) {
   var fam = famOf(groove), kick = kickOf(groove);
   var form = pickForm(rng, p.bars);
   var A = varyCells(rng, barCells(p.onsets, 0), fam, dens, groove.off, kick, 1);
-  var onsets = layOutForm(rng, p.bars, form, A, fam, dens, groove.off, kick);
+  var onsets = layOutForm(rng, p.bars, form, A, fam, dens, groove.off, kick, groove);
   onsets.form = form.name;
   return onsets;
 }
@@ -494,12 +588,17 @@ function genAccents(rng, p, groove) {
   return accents;
 }
 
-// §1.9 slide conditions: conditional, never arbitrary
+// §1.9 slide conditions: conditional, never arbitrary. The four directional
+// biases (upward / downward / return / octave) are weighted independently and
+// per groove, because which way a line glides is as much of its character as how
+// often — acidic climbs and octave-jumps, hypnotic keeps returning to where it
+// just was, broken falls.
 function genSlides(rng, p, groove, densActual) {
   var n = p.onsets.length;
   var slides = [];
   for (var s = 0; s < n; s++) slides[s] = false;
   var ons = onsetList(p);
+  var sd = groove.sdir || SDIR;
   for (var k = 0; k + 1 < ons.length; k++) {
     var i = ons[k], j = ons[k + 1];
     var interval = Math.abs(p.pitches[j] - p.pitches[i]);
@@ -507,12 +606,29 @@ function genSlides(rng, p, groove, densActual) {
     prob *= (j === i + 1) ? 1.6 : 0.25;             // legato strongly preferred
     if (interval <= 3) prob *= 1.4;                  // small intervals slide more
     if (p.accents[j]) prob *= 1.3;                   // accented targets slide more
-    if (p.pitches[j] < p.pitches[i]) prob *= 0.9;    // slight upward bias
-    if (interval === 12) prob *= 0.7;                // octave slides allowed, rarer
+    if (p.pitches[j] > p.pitches[i]) prob *= sd.up;
+    else if (p.pitches[j] < p.pitches[i]) prob *= sd.dn;
+    // a return slide lands back on the pitch the line left one onset ago
+    if (k > 0 && p.pitches[j] === p.pitches[ons[k - 1]]) prob *= sd.rtn;
+    if (interval === 12) prob *= sd.oct * 0.7;       // octave slides allowed, rarer
     if (interval === 0) prob *= 0.3;
     if (rng() < clamp(prob, 0, 0.85)) slides[j] = true;
   }
   return slides;
+}
+
+// §5.3 regenerating one layer still has to leave the phrase playable: velocity
+// and gate read the accent and slide layers, so they follow when those change.
+// Timbre, wet and microtiming are left alone — they belong to other layers.
+function refreshDynamics(rng, p, groove) {
+  var gateFrac = clamp(groove.gate * (1.7 - 1.1 * P.chunk), 0.15, 0.98);
+  for (var s = 0; s < p.onsets.length; s++) {
+    if (!p.onsets[s]) { p.vels[s] = 0; p.gates[s] = 0; continue; }
+    if (p.accents[s]) p.vels[s] = Math.floor(112 + rng() * 12);
+    else if ((s % 4) !== 0 && rng() < 0.25) p.vels[s] = Math.floor(58 + rng() * 12);
+    else p.vels[s] = Math.floor(82 + rng() * 18);
+    p.gates[s] = p.slides[s] ? 1.02 : gateFrac * (0.9 + rng() * 0.2);
+  }
 }
 
 // per-step metadata layers (§5.1): velocity, gate, probability, timbre, wet, micro
@@ -573,7 +689,8 @@ function generatePhrase(seed, parent) {
     generation: parent ? parent.generation + 1 : 0,
     letter: parent ? parent.letter : String.fromCharCode(65 + (letterIdx % 26)),
     seed: seed, bars: P.bars,
-    contour: pickContour(rng, groove)
+    contour: pickContour(rng, groove),
+    mode: pickMode(rng, groove)   // §2.1 filter mode, drawn from the groove's affinity
   };
   p.onsets = genRhythm(rng, P.bars, dens, groove);
   p.form = p.onsets.form;
@@ -587,6 +704,40 @@ function generatePhrase(seed, parent) {
 
 // ---------------------------------------------------------------- mutation (§1.1 + §4.3)
 
+// §5.3 per-layer freezes. Lock freezes everything; these freeze one layer while
+// the others go on evolving, which is how you hold a rhythm you like and let the
+// pitches move under it. A frozen layer is grafted back onto the child after the
+// mutation has run, so the mutation never has to know about it.
+function anyFreeze() { return P.frzr || P.frzp || P.frzt; }
+
+function repairPitches(p, root) {
+  // if rhythm moved under a frozen pitch layer, new onsets have no pitch yet —
+  // carry the last sounding pitch forward rather than dropping a note
+  var last = root;
+  for (var s = 0; s < p.onsets.length; s++) {
+    if (!p.onsets[s]) continue;
+    if (typeof p.pitches[s] !== "number") p.pitches[s] = last;
+    else last = p.pitches[s];
+  }
+}
+
+function applyFreezes(child, parent) {
+  if (P.frzr) {                       // rhythm layer immutable
+    child.onsets = parent.onsets.slice();
+    child.form = parent.form;
+  }
+  if (P.frzp) {                       // pitch layer immutable
+    child.pitches = parent.pitches.slice();
+    repairPitches(child, P.root);
+  }
+  if (P.frzt) {                       // timbre drift paused
+    child.mode = parent.mode;
+    child.timbres = parent.timbres.slice();
+    child.wets = parent.wets.slice();
+  }
+  return child;
+}
+
 function mutatePhrase(parent, novelty) {
   var rng = makeRng(parent.seed * 31 + parent.generation * 7 + idCounter * 13 + 1);
   var groove = grooveNow();
@@ -598,6 +749,11 @@ function mutatePhrase(parent, novelty) {
     // high: regenerate most layers; retain root / scale / phrase length
     var fresh = generatePhrase(Math.floor(rng() * 2147483646), parent);
     fresh.letter = parent.letter;
+    if (anyFreeze()) {
+      applyFreezes(fresh, parent);
+      genStepMeta(rng, fresh, groove);
+      applyFreezes(fresh, parent);   // step meta rewrites timbre/wet; put them back
+    }
     return fresh;
   }
 
@@ -636,10 +792,17 @@ function mutatePhrase(parent, novelty) {
     addPickups(rng, child, groove);
   }
 
+  // §5.2 phrase-level timbre evolution: a mutation may move the filter mode, but
+  // only inside the groove's affinity and only when the timbre layer is free.
+  if (!P.frzt && depth >= 1 && rng() < alloc.timbre) child.mode = pickMode(rng, groove);
+
+  if (anyFreeze()) applyFreezes(child, parent);
+
   // §4.3: a low-depth mutation spends only its timbre/wet allocation on the
   // sound layers; a rhythm change has new steps and needs the full metadata pass.
   if (depth === 0) mutateMeta(rng, child, alloc);
   else genStepMeta(rng, child, groove);
+  if (anyFreeze()) applyFreezes(child, parent);
   return child;
 }
 
@@ -694,9 +857,11 @@ function phraseBoundary() {
 }
 
 function phraseAdvance() {
-  slow.cut = walkUpdate(slow.cut, 0.08, chaosRng); // §4.2 clamps
-  slow.res = walkUpdate(slow.res, 0.03, chaosRng);
-  slow.wet = walkUpdate(slow.wet, 0.10, chaosRng);
+  if (!P.frzt) {                                   // §5.3 freeze timbre pauses the drift
+    slow.cut = walkUpdate(slow.cut, 0.08, chaosRng); // §4.2 clamps
+    slow.res = walkUpdate(slow.res, 0.03, chaosRng);
+    slow.wet = walkUpdate(slow.wet, 0.10, chaosRng);
+  }
   if (firstCycle) { firstCycle = false; pushSynth(); updateDisplay(); return; }
   if (P.lock) { pushSynth(); return; } // §5.3 lock phrase
 
@@ -729,25 +894,37 @@ function phraseAdvance() {
 }
 
 function barBoundary() {
-  med.dec = walkUpdate(med.dec, 0.12, chaosRng);
-  med.drv = walkUpdate(med.drv, 0.05, chaosRng);
+  if (!P.frzt) {                                   // §5.3 freeze timbre pauses the drift
+    med.dec = walkUpdate(med.dec, 0.12, chaosRng);
+    med.drv = walkUpdate(med.drv, 0.05, chaosRng);
+  }
   pushSynth();
   pushState(); // the medium walk drifts every bar; the saved state follows it
 }
 
 // ---------------------------------------------------------------- synth coupling (§2 / §5.1)
 
+// §2.4 dynamic asymmetric saturation. A DC offset into the saturator clips one
+// half of the wave harder than the other, which is what puts even harmonics —
+// the growl — into a bass instead of the pure odd-order buzz a symmetric tanh
+// gives. Velocity scales it, so playing harder changes the timbre and not only
+// the level; a DC blocker after the saturator removes the offset itself.
+function asymFor(vel, acc) {
+  return clamp((0.08 + P.drive * 0.40) * (0.55 + (vel / 127) * (acc ? 1.05 : 0.75)), 0, 0.6);
+}
+
 function pushSynth() {
   // voicing note: the filter sustains near ~311 Hz at default cutoff and the
   // envelope sweeps ~1.2 kHz above it — the squelch rides ON TOP of a solid
   // fundamental instead of parking every note in the midrange.
-  var cutoffHz = 45 * Math.pow(2, P.cutoff * 6.2) * (1 + slow.cut);
-  var reso = clamp(0.06 + P.squelch * 0.68 + slow.res, 0, 0.92);
-  var envd = 180 + Math.pow(P.squelch, 1.4) * 2800;
-  var drv = (0.7 + P.drive * 2.6) * (1 + med.drv);
-  // §2.3 filter mode: each groove blends a little bandpass into the lowpass,
+  var M = modeOf(); // §2.1 the mode moves the centre the macros move around
+  var cutoffHz = 45 * Math.pow(2, P.cutoff * 6.2 + M.cut) * (1 + slow.cut);
+  var reso = clamp(0.06 + P.squelch * 0.68 + M.res + slow.res, 0, 0.92);
+  var envd = (180 + Math.pow(P.squelch, 1.4) * 2800) * M.env;
+  var drv = (0.7 + P.drive * 2.6) * M.drv * (1 + med.drv);
+  // §2.3 filter voicing: each mode blends a little bandpass into the lowpass,
   // and squelch opens that blend further — capped so the fundamental survives.
-  var bpmix = clamp(grooveNow().bp * (0.35 + 0.65 * P.squelch), 0, 0.35);
+  var bpmix = clamp(M.bp * (0.35 + 0.65 * P.squelch), 0, 0.40);
   outlet(0, "cutoff", cutoffHz, 30);
   outlet(0, "reso", reso);
   outlet(0, "envd", envd, 30);
@@ -765,7 +942,22 @@ function pushSynth() {
   outlet(0, "gain", 0.55 * (1 + reso * 0.15)); // §2.2 residual broadband compensation
   outlet(0, "adec", lerp(430, 120, P.chunk) * (1 + med.dec * 0.5));
   outlet(0, "asus", lerp(0.5, 0.12, P.chunk));
-  outlet(0, "sub", 0.45 + P.sub * 0.55); // §2.2: floor keeps low-end energy at any Sub setting
+  // §2.5 sub layer. Mix keeps a floor so there is low-end energy at any Sub
+  // setting; saturation gives the sine harmonics that let it read on a small
+  // speaker, with makeup so the control is a timbre and not a second level knob;
+  // and the sub ducks under resonant peaks so a blooming filter and the sub
+  // don't stack up into the same few dB of headroom.
+  outlet(0, "sub", 0.45 + P.sub * 0.55);
+  outlet(0, "subdrv", 0.6 + P.subsat * 2.6);
+  outlet(0, "subgain", 1 / (1 + P.subsat * 0.55));
+  outlet(0, "subduck", clamp((reso - 0.45) * 0.9, 0, 0.45));
+  outlet(0, "asym", asymFor(96, false)); // §2.4 idle value; each note re-sends its own
+  // §3.4 stereo: the low end is mono, always. Only the wet return spreads, and
+  // it spreads as mid/side, so a fold to mono can attenuate it but never cancel
+  // it. monof is the mono-below crossover — everything under it stays in the dry
+  // (mono) path and never reaches the delay network at all.
+  outlet(0, "width", P.width * 1.4);
+  outlet(0, "monof", 320 + (1 - P.width) * 380, 60);
   outlet(0, "wet", Math.pow(P.wet, 1.25), 60);
   outlet(0, "duck", 0.45 + 0.4 * P.wet);
   outlet(0, "fb", 0.28 + P.wet * 0.22);
@@ -785,8 +977,9 @@ function pushDelays() {
 }
 
 function fdecBase() {
-  // short enough that the squelch resolves inside a 16th at default Decay
-  return (40 + Math.pow(P.decay, 1.5) * 520) * (1 + med.dec);
+  // short enough that the squelch resolves inside a 16th at default Decay; the
+  // mode scales it, which is most of what separates bite (0.55) from hollow (1.7)
+  return (40 + Math.pow(P.decay, 1.5) * 520) * modeOf().dec * (1 + med.dec);
 }
 
 // ---------------------------------------------------------------- playback
@@ -819,16 +1012,22 @@ function fireStep(s) {
   var willTie = next >= 0 && p.slides[next];
   var gateMs = Math.max(15, p.gates[s] * stepMs);
 
-  // §2.1 filter state machine: accent drives coupled env/drive/decay changes
+  // §2.1 filter state machine: accent drives coupled env/drive/decay changes, and
+  // how far an accent opens the filter is itself a property of the mode — that is
+  // the difference between round (barely) and acid (a full sweep per accent).
   outlet(1, "fdec", fdecBase() * (acc ? 0.8 : 1));
-  outlet(1, "fmul", (acc ? 1.55 : 1.0) * (1 + tim * 0.4));
+  outlet(1, "fmul", (acc ? modeOf().acc : 1.0) * (1 + tim * 0.4));
   outlet(1, "dmul", (acc ? 1.35 : 1.0) * (1 + (p.vels[s] / 127) * 0.2));
+  outlet(1, "asym", asymFor(p.vels[s], acc)); // §2.4 velocity-linked saturation
   outlet(1, "pitch", p.pitches[s], glide);
-  // §2.2 sub reinforcement + §2.5: sub pitch folded into 32.7–61.7 Hz (MIDI 24–35)
-  // so every note — including octave/fifth excursions — carries a true sub fundamental
+  // §2.2 sub reinforcement + §2.5: sub pitch folded into a fixed octave window so
+  // every note — including octave/fifth excursions — carries a true sub
+  // fundamental. -1 lands in 32.7–61.7 Hz (MIDI 24–35); -2 in 16.4–30.9 Hz, for
+  // systems that can actually move air down there.
+  var lo = P.suboct ? 12 : 24, hi = lo + 11;
   var sp = p.pitches[s] - 12;
-  while (sp > 35) sp -= 12;
-  while (sp < 24) sp += 12;
+  while (sp > hi) sp -= 12;
+  while (sp < lo) sp += 12;
   outlet(1, "spitch", sp, glide);
   if (!tie) outlet(1, "trig", p.vels[s] / 127); // slide = glide without retrigger
   noteOn = true;
@@ -894,6 +1093,7 @@ function onRestart(total) {
 }
 
 function stepWalk() { // §4.2 fast walk: drifts every step, bounded and novelty-scaled
+  if (P.frzt) return;                              // §5.3 freeze timbre pauses the drift
   var amt = 0.35 + P.novelty * 0.65;
   fast.tim = walkUpdate(fast.tim, 0.18 * amt, chaosRng);
   fast.wet = walkUpdate(fast.wet, 0.14 * amt, chaosRng);
@@ -941,7 +1141,8 @@ function updateDisplay() {
   outlet(2, "disp", phraseName(phrase),
     "·", grooveNow().name,
     "·", phrase.bars + (phrase.bars === 1 ? " bar" : " bars"),
-    "·", phrase.contour);
+    "·", phrase.contour,
+    "·", modeName());
 }
 
 // ---------------------------------------------------------------- MIDI capture (§6)
@@ -1054,6 +1255,22 @@ function cutoff(v) { P.cutoff = clamp(v, 0, 1); pushSynth(); }
 function decay(v) { P.decay = clamp(v, 0, 1); }
 function sub(v) { P.sub = clamp(v, 0, 1); pushSynth(); }
 function wet(v) { P.wet = clamp(v, 0, 1); pushSynth(); }
+function subsat(v) { P.subsat = clamp(v, 0, 1); pushSynth(); }   // §2.5
+function width(v) { P.width = clamp(v, 0, 1); pushSynth(); }     // §3.4
+function suboct(i) { P.suboct = Math.floor(i) ? 1 : 0; }         // §2.5 -1 / -2
+
+function fmode(i) { // §2.1 — 0 follows the groove's affinity, 1..7 force a mode
+  P.fmode = clamp(Math.floor(i), 0, MODE_NAMES.length);
+  pushSynth();
+  updateDisplay();
+}
+
+// §1.4 bipolar downbeat rest bias. It changes the vocabulary the next phrase is
+// built from, so it queues a regeneration rather than editing the current one.
+function interlock(v) {
+  P.interlock = clamp(v, 0, 1);
+  pendingRegen = pendingRegen || "soft";
+}
 
 function groove(i) {
   P.groove = clamp(Math.floor(i), 0, GROOVES.length - 1);
@@ -1078,7 +1295,13 @@ function plen(i) {
   if (bars !== P.bars) { P.bars = bars; pendingRegen = "full"; }
 }
 
-function lock(v) { P.lock = v ? 1 : 0; } // §5.3 lock phrase
+// §5.3 — lock freezes everything; the three layer freezes hold one layer while
+// the rest goes on evolving, which is how you keep a rhythm you like and let the
+// pitches move under it.
+function lock(v) { P.lock = v ? 1 : 0; }
+function frzr(v) { P.frzr = v ? 1 : 0; }
+function frzp(v) { P.frzp = v ? 1 : 0; }
+function frzt(v) { P.frzt = v ? 1 : 0; }
 
 function Mutate() { if (phrase) adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.25))); } // §5.3
 function Return() { // §5.3 — one press steps back a generation, two in a row go to the root
@@ -1122,6 +1345,25 @@ function Pitch() { // §5.3 regenerate one layer only: pitch
   updateDisplay();
   pushState();
 }
+function Accent() { // §5.3 regenerate one layer only: accent
+  if (!phrase) return;
+  var rng = makeRng(Math.floor(chaosRng() * 2147483646) + 1);
+  var groove = grooveNow();
+  phrase.accents = genAccents(rng, phrase, groove);
+  refreshDynamics(rng, phrase, groove); // velocity reads the accent layer
+  updateDisplay();
+  pushState();
+}
+function Slide() { // §5.3 regenerate one layer only: slide
+  if (!phrase) return;
+  var rng = makeRng(Math.floor(chaosRng() * 2147483646) + 1);
+  var groove = grooveNow();
+  var dens = clamp(groove.dens * (0.4 + P.density * 1.4), 0.05, 0.95);
+  phrase.slides = genSlides(rng, phrase, groove, dens);
+  refreshDynamics(rng, phrase, groove); // a tie is a gate of 1.02, so gates follow
+  updateDisplay();
+  pushState();
+}
 
 // pushall runs on device load, after [pattr] has already had its say — so a set
 // that was saved before the device ever played still ends up with a stored phrase.
@@ -1137,6 +1379,16 @@ function pushall() { pushSynth(); pushDelays(); updateDisplay(); pushState(); }
 var STATE_VERSION = 1;
 var STATE_HEAD = 20;    // header atoms before the per-step block
 var STATE_STRIDE = 8;   // atoms per step
+// Anything added after v0.4 goes in a trailing block instead of the header, so
+// the version doesn't have to move and sets saved by older builds still restore:
+// a short list simply has no tail and those fields fall back to their defaults.
+var STATE_TAIL = 2;     // [ §2.1 filter mode index, §1.3b bar form index ]
+
+function formIdx(bars, name) {
+  var list = FORMS[bars] || FORMS[2];
+  for (var i = 0; i < list.length; i++) if (list[i].name === name) return i;
+  return -1;
+}
 
 function pushState() {
   var p = phrase;
@@ -1157,6 +1409,8 @@ function pushState() {
     a.push(round3(p.wets[s]));
     a.push(round3(p.micros[s]));
   }
+  a.push(modeIdx(p.mode || "round"));
+  a.push(formIdx(p.bars, p.form));
   outlet(0, "state", a);
 }
 
@@ -1200,6 +1454,16 @@ function Restore() { // list from [pattr] on device load
     p.micros[s] = a[o + 7];
   }
 
+  var tail = STATE_HEAD + steps * STATE_STRIDE;
+  if (n >= tail + STATE_TAIL) {
+    p.mode = MODE_NAMES[a[tail]] || "round";
+    var fi = a[tail + 1], list = FORMS[p.bars] || FORMS[2];
+    if (fi >= 0 && list[fi]) p.form = list[fi].name;
+  } else {
+    // saved by a build that predates the tail: fall back rather than fail
+    p.mode = "round";
+  }
+
   phrase = p;
   history = [p];
   // the dial/menu parameters Live restored have already fired by now; drop the
@@ -1213,6 +1477,7 @@ function Restore() { // list from [pattr] on device load
 function dump() { // debug/test hook: full state snapshot on outlet 2
   var snap = {
     params: P, stepMs: stepMs, playStep: playStep,
+    mode: modeName(),
     historyLen: history.length,
     freezeLeft: freezeLeft,
     slow: { cut: slow.cut, res: slow.res, wet: slow.wet },
@@ -1221,7 +1486,7 @@ function dump() { // debug/test hook: full state snapshot on outlet 2
     phrase: phrase ? {
       id: phrase.id, parentId: phrase.parentId, generation: phrase.generation,
       name: phraseName(phrase), seed: phrase.seed, bars: phrase.bars, contour: phrase.contour,
-      form: phrase.form,
+      form: phrase.form, mode: phrase.mode,
       onsets: phrase.onsets, pitches: phrase.pitches, accents: phrase.accents,
       slides: phrase.slides, gates: phrase.gates, vels: phrase.vels,
       probs: phrase.probs, timbres: phrase.timbres, wets: phrase.wets, micros: phrase.micros

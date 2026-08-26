@@ -250,42 +250,67 @@ def build(kind="instrument"):
           pres=[4.0, 3.0, 260.0, 18.0],
           extra={"fontface": 1, "fontsize": 11.0}, numoutlets=0)
     p.box("display", "message", "…",
-          pres=[268.0, 4.0, 188.0, 16.0],
+          pres=[352.0, 4.0, 252.0, 16.0],
           extra={"fontsize": 9.0}, numinlets=2, numoutlets=1)
 
+    # (parameter longname, initial, js message name). The longname is what Live
+    # automates and Push maps; the message name is the handler in pg-core.js.
     dials = [
-        ("Novelty", 0.35), ("Density", 0.5), ("Chunk", 0.55),
-        ("Squelch", 0.5), ("Drive", 0.35), ("Cutoff", 0.45),
-        ("Decay", 0.5), ("Sub", 0.6), ("Wet", 0.3),
+        ("Novelty", 0.35, "novelty"), ("Density", 0.5, "density"),
+        ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
+        ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
+        ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
+        ("Decay", 0.5, "decay"), ("Sub", 0.6, "sub"),
+        ("SubSat", 0.35, "subsat"),        # §2.5 sub saturation
+        ("Wet", 0.3, "wet"),
+        ("Width", 0.6, "width"),           # §3.4 stereo width
     ]
-    for i, (name, init) in enumerate(dials):
+    for i, (name, init, _msg) in enumerate(dials):
         p.box("ui_" + name.lower(), "live.dial",
               pres=[4.0 + i * 50.0, 24.0, 48.0, 64.0],
               extra=dial_attrs(name, init), numinlets=1, numoutlets=2,
               outlettype=["", "float"])
 
-    p.box("ui_groove", "live.menu",
-          pres=[4.0, 96.0, 112.0, 15.0],
-          extra=menu_attrs("Groove", ["restrained", "rolling", "syncopated",
-                                      "driving", "acidic", "broken", "hypnotic"], 1),
-          numinlets=1, numoutlets=3, outlettype=["", "", "float"])
-    p.box("ui_root", "live.menu",
-          pres=[120.0, 96.0, 66.0, 15.0],
-          extra=menu_attrs("Root", ["C", "Db", "D", "Eb", "E", "F",
-                                    "Gb", "G", "Ab", "A", "Bb", "B"], 0),
-          numinlets=1, numoutlets=3, outlettype=["", "", "float"])
-    p.box("ui_plen", "live.menu",
-          pres=[190.0, 96.0, 76.0, 15.0],
-          extra=menu_attrs("Length", ["1 bar", "2 bars", "4 bars"], 1),
-          numinlets=1, numoutlets=3, outlettype=["", "", "float"])
-    p.box("ui_lock", "live.toggle",
-          pres=[276.0, 96.0, 15.0, 15.0],
-          extra=menu_attrs("Lock", ["off", "on"], 0),
-          numinlets=1, numoutlets=2, outlettype=["", "float"])
-    p.box("lock_label", "comment", "lock",
-          pres=[293.0, 96.0, 36.0, 16.0], extra={"fontsize": 9.0}, numoutlets=0)
+    # (box key, longname, items, initial index, js message name, presentation rect)
+    menus = [
+        ("ui_groove", "Groove", ["restrained", "rolling", "syncopated",
+                                 "driving", "acidic", "broken", "hypnotic"],
+         1, "groove", [4.0, 96.0, 112.0, 15.0]),
+        # §2.1 "auto" lets the groove's own affinity weights pick the mode
+        ("ui_fmode", "Mode", ["auto", "round", "wet", "squelch", "bite",
+                              "hollow", "rubber", "acid"],
+         0, "fmode", [120.0, 96.0, 92.0, 15.0]),
+        ("ui_root", "Root", ["C", "Db", "D", "Eb", "E", "F",
+                             "Gb", "G", "Ab", "A", "Bb", "B"],
+         0, "root", [216.0, 96.0, 58.0, 15.0]),
+        ("ui_plen", "Length", ["1 bar", "2 bars", "4 bars"],
+         1, "plen", [278.0, 96.0, 70.0, 15.0]),
+        # §2.5 how far down the sub sits under the note
+        ("ui_suboct", "SubOct", ["sub -1", "sub -2"],
+         0, "suboct", [352.0, 96.0, 66.0, 15.0]),
+    ]
+    for key, longname, items, init, _msg, rect in menus:
+        p.box(key, "live.menu", pres=rect,
+              extra=menu_attrs(longname, items, init),
+              numinlets=1, numoutlets=3, outlettype=["", "", "float"])
 
-    buttons = ["Mutate", "Return", "Reseed", "Rhythm", "Pitch", "Capture"]
+    # §5.3 the global lock plus the three per-layer freezes: rhythm, pitch and
+    # timbre hold independently, so one layer can drift while the others don't.
+    toggles = [
+        ("ui_lock", "Lock", "lock", "lock", 424.0, 30.0),
+        ("ui_frzr", "FrzRhythm", "frzr", "rhy", 474.0, 26.0),
+        ("ui_frzp", "FrzPitch", "frzp", "pit", 520.0, 26.0),
+        ("ui_frzt", "FrzTimbre", "frzt", "tim", 566.0, 26.0),
+    ]
+    for key, longname, _msg, label, x, lw in toggles:
+        p.box(key, "live.toggle", pres=[x, 96.0, 15.0, 15.0],
+              extra=menu_attrs(longname, ["off", "on"], 0),
+              numinlets=1, numoutlets=2, outlettype=["", "float"])
+        p.box(key + "_label", "comment", label,
+              pres=[x + 17.0, 96.0, lw, 16.0], extra={"fontsize": 9.0}, numoutlets=0)
+
+    buttons = ["Mutate", "Return", "Reseed", "Rhythm", "Pitch",
+               "Accent", "Slide", "Capture"]
     for i, name in enumerate(buttons):
         p.box("btn_" + name.lower(), "message", name,
               pres=[4.0 + i * 58.0, 120.0, 54.0, 18.0],
@@ -304,15 +329,13 @@ def build(kind="instrument"):
     p.obj("prepend_pos", "prepend pos", numinlets=1, numoutlets=1)
 
     # UI -> js prepends
-    for name, _ in dials:
-        key = name.lower()
-        p.obj("pre_" + key, f"prepend {key}", numinlets=1, numoutlets=1)
-        p.connect("ui_" + key, 0, "pre_" + key, 0)
-        p.connect("pre_" + key, 0, "js", 0)
-    for key in ("groove", "root", "plen", "lock"):
-        p.obj("pre_" + key, f"prepend {key}", numinlets=1, numoutlets=1)
-        p.connect("ui_" + key, 0, "pre_" + key, 0)
-        p.connect("pre_" + key, 0, "js", 0)
+    ui_sources = [("ui_" + name.lower(), msg) for name, _init, msg in dials]
+    ui_sources += [(key, msg) for key, _ln, _items, _i, msg, _r in menus]
+    ui_sources += [(key, msg) for key, _ln, msg, _lbl, _x, _lw in toggles]
+    for box_key, msg in ui_sources:
+        p.obj("pre_" + msg, f"prepend {msg}", numinlets=1, numoutlets=1)
+        p.connect(box_key, 0, "pre_" + msg, 0)
+        p.connect("pre_" + msg, 0, "js", 0)
     for name in buttons:
         p.connect("btn_" + name.lower(), 0, "js", 0)
 
@@ -349,12 +372,18 @@ def build(kind="instrument"):
                     "lpamt", "bpamt", "nlin", "nlout", "shelf",
                     # §3 wet envelope + diffusion
                     "wamt", "wflr", "wdec", "dmod",
+                    # §2.5 sub voice: its own saturation, makeup and resonant-peak duck
+                    "subdrv", "subgain", "subduck",
+                    # §2.4 saturation asymmetry (idle value; each note re-sends its own)
+                    "asym",
+                    # §3.4 stereo: return width and the frequency below which it stays mono
+                    "width", "monof",
                     # §5.4 serialized generator state, headed for [pattr]
                     "state"]
     p.obj("route_synth", "route " + " ".join(synth_params),
           numinlets=1, numoutlets=len(synth_params) + 1)
     # "note" is the MIDI-effect build's note event; the instrument leaves it unrouted
-    note_params = ["pitch", "spitch", "trig", "fmul", "dmul", "fdec", "note"]
+    note_params = ["pitch", "spitch", "trig", "fmul", "dmul", "fdec", "asym", "note"]
     p.obj("route_note", "route " + " ".join(note_params),
           numinlets=1, numoutlets=len(note_params) + 1)
     p.obj("route_disp", "route disp dump", numinlets=1, numoutlets=3)
@@ -385,6 +414,7 @@ def build(kind="instrument"):
     p.sig("l_wet", "line~", 2, numoutlets=2)      # wet send level
     p.sig("l_pitch", "line~", 2, numoutlets=2)    # note pitch (MIDI, glides)
     p.sig("l_spitch", "line~", 2, numoutlets=2)   # sub pitch (MIDI, folded 24-35)
+    p.sig("l_monof", "line~", 2, numoutlets=2)    # §3.4 mono-below / wet crossover Hz
 
     p.connect("route_synth", synth_params.index("cutoff"), "l_cutoff", 0)
     p.connect("route_synth", synth_params.index("envd"), "l_envd", 0)
@@ -392,6 +422,7 @@ def build(kind="instrument"):
     p.connect("route_synth", synth_params.index("wet"), "l_wet", 0)
     p.connect("route_note", note_params.index("pitch"), "l_pitch", 0)
     p.connect("route_note", note_params.index("spitch"), "l_spitch", 0)
+    p.connect("route_synth", synth_params.index("monof"), "l_monof", 0)
 
     # ---------------------------------------------------------------- envelopes
     # amp: fast attack, chunk-scaled decay/sustain; filter: snappy, sustain 0
@@ -482,37 +513,76 @@ def build(kind="instrument"):
 
     p.sig("amp_mul", "*~ 0.", 2)
     p.sig("post_mul", "*~ 1.", 2)
+    # §2.4 dynamic, asymmetric saturation. A DC offset ahead of the tanh~ clips
+    # one half-wave harder than the other, which is what puts *even* harmonics
+    # into the tone instead of only odd ones — the difference between a fuzz and
+    # a growl. The offset is sent per note and scales with velocity and accent,
+    # so the character opens up as the phrase digs in rather than sitting still.
+    # The DC has to come back out afterwards or it eats headroom and thumps the
+    # sub, hence the 10 Hz onepole~ subtracted from the saturated signal.
+    p.sig("asym_add", "+~ 0.", 2)
     p.sig("sat2", "tanh~", 1)
+    p.sig("dc_lp", "onepole~ 10.", 2)
+    p.sig("dc_block", "-~", 2)
     p.sig("gain_mul", "*~ 0.5", 2)
     p.connect("shelf_sum", 0, "amp_mul", 0)
     p.connect("adsr_amp", 0, "amp_mul", 1)
     p.connect("amp_mul", 0, "post_mul", 0)
     p.connect("route_synth", synth_params.index("post"), "post_mul", 1)
-    p.connect("post_mul", 0, "sat2", 0)
-    p.connect("sat2", 0, "gain_mul", 0)
+    p.connect("post_mul", 0, "asym_add", 0)
+    p.connect("route_synth", synth_params.index("asym"), "asym_add", 1)
+    p.connect("route_note", note_params.index("asym"), "asym_add", 1)
+    p.connect("asym_add", 0, "sat2", 0)
+    p.connect("sat2", 0, "dc_lp", 0)
+    p.connect("sat2", 0, "dc_block", 0)
+    p.connect("dc_lp", 0, "dc_block", 1)
+    p.connect("dc_block", 0, "gain_mul", 0)
     p.connect("route_synth", synth_params.index("gain"), "gain_mul", 1)
 
     # ---------------------------------------------------------------- sub oscillator (§2.5)
-    # pitch arrives pre-folded (MIDI 24-35, 32.7-61.7 Hz) from js; light tanh~
-    # saturation adds 65-130 Hz harmonics so the sub reads on small speakers
+    # pitch arrives pre-folded from js — MIDI 24-35 (32.7-61.7 Hz) at sub -1, or
+    # 12-23 (16.4-30.9 Hz) at sub -2. The sub is its own voice, not a copy of the
+    # main one: SubSat drives its saturator (adding 65-130 Hz harmonics so it
+    # reads on speakers that cannot move the fundamental), and the makeup gain
+    # takes back the level that drive adds so the control is a timbre, not a
+    # loudness. The duck then pulls the sub down under a resonant filter peak,
+    # which is where a fat sub and a screaming resonance would otherwise fight.
     p.sig("mtof_sub", "mtof~", 1)
     p.sig("osc_sub", "cycle~", 2)
     p.sig("sub_sat_pre", "*~ 1.5", 2)
     p.sig("sub_sat", "tanh~", 1)
+    p.sig("sub_makeup", "*~ 1.", 2)
     p.sig("sub_env", "*~ 0.", 2)
+    p.sig("sub_duck_amt", "*~ 0.", 2)
+    p.sig("sub_duck_inv", "!-~ 1.", 2)
+    p.sig("sub_duck_mul", "*~ 1.", 2)
     p.sig("sub_mul", "*~ 0.6", 2)
     p.connect("l_spitch", 0, "mtof_sub", 0)
     p.connect("mtof_sub", 0, "osc_sub", 0)
     p.connect("osc_sub", 0, "sub_sat_pre", 0)
+    p.connect("route_synth", synth_params.index("subdrv"), "sub_sat_pre", 1)
     p.connect("sub_sat_pre", 0, "sub_sat", 0)
-    p.connect("sub_sat", 0, "sub_env", 0)
+    p.connect("sub_sat", 0, "sub_makeup", 0)
+    p.connect("route_synth", synth_params.index("subgain"), "sub_makeup", 1)
+    p.connect("sub_makeup", 0, "sub_env", 0)
     p.connect("adsr_amp", 0, "sub_env", 1)
-    p.connect("sub_env", 0, "sub_mul", 0)
+    # the filter envelope is the resonant peak: duck against it, scaled by how
+    # much peak there actually is (subduck is 0 until resonance is high)
+    p.connect("adsr_filt", 0, "sub_duck_amt", 0)
+    p.connect("route_synth", synth_params.index("subduck"), "sub_duck_amt", 1)
+    p.connect("sub_duck_amt", 0, "sub_duck_inv", 0)
+    p.connect("sub_env", 0, "sub_duck_mul", 0)
+    p.connect("sub_duck_inv", 0, "sub_duck_mul", 1)
+    p.connect("sub_duck_mul", 0, "sub_mul", 0)
     p.connect("route_synth", synth_params.index("sub"), "sub_mul", 1)
 
     # ---------------------------------------------------------------- wet core (§3)
     # send = highpassed dry, level enveloped, ducked against the amp env
-    p.sig("wet_hp", "svf~ 500. 0.2", 3, numoutlets=4)  # §3.1 crossover: wet lives above 500 Hz
+    # §3.1/§3.4 crossover: the wet network is the only stereo content in the
+    # device, so the frequency it starts at *is* the mono-below frequency. Width
+    # drives it: a narrow image can afford to reverberate lower down, a wide one
+    # has to keep more of the low end centred.
+    p.sig("wet_hp", "svf~ 500. 0.2", 3, numoutlets=4)
     p.sig("wet_mul", "*~ 0.", 2)
     p.sig("duckamt_mul", "*~ 0.6", 2)
     p.sig("duck_inv", "!-~ 1.", 2)
@@ -523,6 +593,7 @@ def build(kind="instrument"):
     p.sig("fb_damp", "onepole~ 2400.", 2)
     p.sig("fb_mul", "*~ 0.3", 2)
     p.connect("gain_mul", 0, "wet_hp", 0)
+    p.connect("l_monof", 0, "wet_hp", 1)          # §3.4 mono-below frequency
     p.connect("wet_hp", 1, "wet_mul", 0)          # svf~ highpass outlet
     p.connect("l_wet", 0, "wet_mul", 1)
     p.connect("adsr_amp", 0, "duckamt_mul", 0)
@@ -583,6 +654,18 @@ def build(kind="instrument"):
     # §3.3 return ducking: delay tails breathe around each new note (same duck_inv as the send)
     p.sig("ret_duck_l", "*~ 1.", 2)
     p.sig("ret_duck_r", "*~ 1.", 2)
+    # §3.4 stereo width, done in mid/side so it is correlation-safe: the returns
+    # are encoded to mid + side, the side is scaled by Width, and the pair is
+    # decoded back to L/R. Folding the output to mono then attenuates the side
+    # content instead of cancelling it — Width 0 collapses to a true mono return
+    # rather than to silence, which is what a plain L/R spread would do.
+    p.sig("ms_sum", "+~", 2)
+    p.sig("ms_mid", "*~ 0.5", 2)
+    p.sig("ms_diff", "-~", 2)
+    p.sig("ms_side", "*~ 0.5", 2)
+    p.sig("ms_sidew", "*~ 1.", 2)
+    p.sig("ms_l", "+~", 2)
+    p.sig("ms_r", "-~", 2)
     p.sig("dry_sub", "+~", 2)
     p.sig("sum_l", "+~", 2)
     p.sig("sum_r", "+~", 2)
@@ -596,10 +679,22 @@ def build(kind="instrument"):
     p.connect("duck_inv", 0, "ret_duck_l", 1)
     p.connect("tapout", 1, "ret_duck_r", 0)
     p.connect("duck_inv", 0, "ret_duck_r", 1)
+    p.connect("ret_duck_l", 0, "ms_sum", 0)
+    p.connect("ret_duck_r", 0, "ms_sum", 1)
+    p.connect("ms_sum", 0, "ms_mid", 0)
+    p.connect("ret_duck_l", 0, "ms_diff", 0)
+    p.connect("ret_duck_r", 0, "ms_diff", 1)
+    p.connect("ms_diff", 0, "ms_side", 0)
+    p.connect("ms_side", 0, "ms_sidew", 0)
+    p.connect("route_synth", synth_params.index("width"), "ms_sidew", 1)
+    p.connect("ms_mid", 0, "ms_l", 0)
+    p.connect("ms_sidew", 0, "ms_l", 1)
+    p.connect("ms_mid", 0, "ms_r", 0)
+    p.connect("ms_sidew", 0, "ms_r", 1)
     p.connect("dry_sub", 0, "sum_l", 0)
-    p.connect("ret_duck_l", 0, "sum_l", 1)
+    p.connect("ms_l", 0, "sum_l", 1)
     p.connect("dry_sub", 0, "sum_r", 0)
-    p.connect("ret_duck_r", 0, "sum_r", 1)
+    p.connect("ms_r", 0, "sum_r", 1)
     p.connect("sum_l", 0, "trim_l", 0)
     p.connect("sum_r", 0, "trim_r", 0)
     p.connect("trim_l", 0, "plugout", 0)
