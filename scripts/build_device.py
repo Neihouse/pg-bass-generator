@@ -80,6 +80,16 @@ class Patch:
         return self.box(key, "newobj", text, pres=pres, extra=extra,
                         numinlets=numinlets, numoutlets=numoutlets, outlettype=outlettype)
 
+    def panel(self, key, pres, bgcolor, bordercolor, rounded=8):
+        """A borderless-click `panel` UI object used only to group controls in
+        the presentation view. Must be boxed before the controls it groups —
+        box order is z-order in the patcher, and a panel added after its
+        children would sit on top and eat their clicks."""
+        return self.box(key, "panel", pres=pres,
+                         extra={"bgcolor": bgcolor, "bordercolor": bordercolor,
+                                "rounded": rounded, "border": 1},
+                         numinlets=1, numoutlets=0)
+
     def connect(self, src, outlet, dst, inlet):
         self.lines.append({"patchline": {
             "source": [self.ids[src], outlet],
@@ -253,68 +263,134 @@ def build(kind="instrument"):
           pres=[352.0, 4.0, 252.0, 16.0],
           extra={"fontsize": 9.0}, numinlets=2, numoutlets=1)
 
-    # (parameter longname, initial, js message name). The longname is what Live
-    # automates and Push maps; the message name is the handler in pg-core.js.
-    dials = [
-        ("Novelty", 0.35, "novelty"), ("Density", 0.5, "density"),
-        ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
-        ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
-        ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
-        ("Decay", 0.5, "decay"), ("Sub", 0.6, "sub"),
-        ("SubSat", 0.35, "subsat"),        # §2.5 sub saturation
-        ("Wet", 0.3, "wet"),
-        ("Width", 0.6, "width"),           # §3.4 stereo width
-    ]
-    for i, (name, init, _msg) in enumerate(dials):
-        p.box("ui_" + name.lower(), "live.dial",
-              pres=[4.0 + i * 50.0, 24.0, 48.0, 64.0],
-              extra=dial_attrs(name, init), numinlets=1, numoutlets=2,
-              outlettype=["", "float"])
+    # Section panels are purely cosmetic (Max `panel` UI objects) — they group
+    # the ~30 dials/menus/toggles/buttons below into named neighborhoods so the
+    # presentation view reads as macro/tone/sub+wet/identity/freeze/actions
+    # instead of one flat, undifferentiated grid. Nothing below depends on a
+    # panel's position, only each real control's own `pres` rect does.
+    RAMP = {  # (bg800, border600, label200), each an (r, g, b) 0-1 triple
+        "gray":  ((0.267, 0.267, 0.255), (0.373, 0.369, 0.353), (0.827, 0.820, 0.780)),
+        "coral": ((0.443, 0.169, 0.075), (0.600, 0.235, 0.114), (0.961, 0.769, 0.702)),
+        "teal":  ((0.031, 0.314, 0.255), (0.059, 0.431, 0.337), (0.624, 0.882, 0.796)),
+        "amber": ((0.388, 0.220, 0.024), (0.522, 0.310, 0.043), (0.980, 0.780, 0.459)),
+        "pink":  ((0.447, 0.141, 0.243), (0.600, 0.208, 0.337), (0.957, 0.753, 0.820)),
+    }
 
-    # (box key, longname, items, initial index, js message name, presentation rect)
-    menus = [
+    def section(key, label, ramp, rect):
+        bg, bd, lb = RAMP[ramp]
+        p.panel(key + "_panel", rect, bgcolor=list(bg) + [0.22], bordercolor=list(bd) + [0.5])
+        lx, ly, lw, _lh = rect
+        p.box(key + "_lbl", "comment", label,
+              pres=[lx + 8.0, ly + 3.0, lw - 12.0, 12.0],
+              extra={"fontsize": 8.5, "textcolor": list(lb) + [1.0]}, numoutlets=0)
+
+    GROUP_GAP = 14.0  # px between neighboring section panels
+    DIAL_PANEL_TOP, DIAL_PANEL_H, DIAL_Y, DIAL_H = 25.0, 90.0, 44.0, 64.0
+    ROW2_PANEL_TOP, ROW2_PANEL_H, ROW2_Y, ROW2_H = 123.0, 36.0, 140.0, 15.0
+    ROW3_PANEL_TOP, ROW3_PANEL_H, ROW3_Y, ROW3_H = 167.0, 38.0, 184.0, 18.0
+
+    # (parameter longname, initial, js message name), grouped into macro / tone
+    # / sub+wet neighborhoods. The longname is what Live automates and Push
+    # maps; the message name is the handler in pg-core.js.
+    DIAL_GROUPS = [
+        ("macro", "gray", [
+            ("Novelty", 0.35, "novelty"), ("Density", 0.5, "density"),
+            ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
+        ]),
+        ("tone", "coral", [
+            ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
+            ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
+            ("Decay", 0.5, "decay"),
+        ]),
+        ("sub + wet", "teal", [
+            ("Sub", 0.6, "sub"), ("SubSat", 0.35, "subsat"),  # §2.5 sub saturation
+            ("Wet", 0.3, "wet"), ("Width", 0.6, "width"),     # §3.4 stereo width
+        ]),
+    ]
+    dials = [d for _label, _ramp, group in DIAL_GROUPS for d in group]
+    cursor = 8.0
+    for label, ramp, group in DIAL_GROUPS:
+        span = (len(group) - 1) * 50.0 + 48.0
+        section(label.replace(" ", "_"), label.upper(), ramp,
+                [cursor - 6.0, DIAL_PANEL_TOP, span + 12.0, DIAL_PANEL_H])
+        for i, (name, init, _msg) in enumerate(group):
+            p.box("ui_" + name.lower(), "live.dial",
+                  pres=[cursor + i * 50.0, DIAL_Y, 48.0, DIAL_H],
+                  extra=dial_attrs(name, init), numinlets=1, numoutlets=2,
+                  outlettype=["", "float"])
+        cursor += span + GROUP_GAP
+
+    # (box key, longname, items, initial index, js message name, item width)
+    MENU_ITEMS = [
         ("ui_groove", "Groove", ["restrained", "rolling", "syncopated",
                                  "driving", "acidic", "broken", "hypnotic"],
-         1, "groove", [4.0, 96.0, 112.0, 15.0]),
+         1, "groove", 112.0),
         # §2.1 "auto" lets the groove's own affinity weights pick the mode
         ("ui_fmode", "Mode", ["auto", "round", "wet", "squelch", "bite",
                               "hollow", "rubber", "acid"],
-         0, "fmode", [120.0, 96.0, 92.0, 15.0]),
+         0, "fmode", 92.0),
         ("ui_root", "Root", ["C", "Db", "D", "Eb", "E", "F",
                              "Gb", "G", "Ab", "A", "Bb", "B"],
-         0, "root", [216.0, 96.0, 58.0, 15.0]),
+         0, "root", 58.0),
         ("ui_plen", "Length", ["1 bar", "2 bars", "4 bars"],
-         1, "plen", [278.0, 96.0, 70.0, 15.0]),
+         1, "plen", 70.0),
         # §2.5 how far down the sub sits under the note
         ("ui_suboct", "SubOct", ["sub -1", "sub -2"],
-         0, "suboct", [352.0, 96.0, 66.0, 15.0]),
+         0, "suboct", 66.0),
     ]
-    for key, longname, items, init, _msg, rect in menus:
+    cursor = 8.0
+    span_id = sum(w for *_, w in MENU_ITEMS) + 4.0 * (len(MENU_ITEMS) - 1)
+    section("identity", "IDENTITY", "amber",
+            [cursor - 6.0, ROW2_PANEL_TOP, span_id + 12.0, ROW2_PANEL_H])
+    menus = []
+    x = cursor
+    for key, longname, items, init, msg, w in MENU_ITEMS:
+        rect = [x, ROW2_Y, w, ROW2_H]
         p.box(key, "live.menu", pres=rect,
               extra=menu_attrs(longname, items, init),
               numinlets=1, numoutlets=3, outlettype=["", "", "float"])
+        menus.append((key, longname, items, init, msg, rect))
+        x += w + 4.0
+    cursor += span_id + GROUP_GAP
 
     # §5.3 the global lock plus the three per-layer freezes: rhythm, pitch and
     # timbre hold independently, so one layer can drift while the others don't.
-    toggles = [
-        ("ui_lock", "Lock", "lock", "lock", 424.0, 30.0),
-        ("ui_frzr", "FrzRhythm", "frzr", "rhy", 474.0, 26.0),
-        ("ui_frzp", "FrzPitch", "frzp", "pit", 520.0, 26.0),
-        ("ui_frzt", "FrzTimbre", "frzt", "tim", 566.0, 26.0),
+    TOGGLES = [
+        ("ui_lock", "Lock", "lock", "lock", 30.0),
+        ("ui_frzr", "FrzRhythm", "frzr", "rhy", 26.0),
+        ("ui_frzp", "FrzPitch", "frzp", "pit", 26.0),
+        ("ui_frzt", "FrzTimbre", "frzt", "tim", 26.0),
     ]
-    for key, longname, _msg, label, x, lw in toggles:
-        p.box(key, "live.toggle", pres=[x, 96.0, 15.0, 15.0],
+    span_fr = sum(17.0 + lw for *_, lw in TOGGLES) + 3.0 * (len(TOGGLES) - 1)
+    section("freeze", "FREEZE", "pink",
+            [cursor - 6.0, ROW2_PANEL_TOP, span_fr + 12.0, ROW2_PANEL_H])
+    toggles = []
+    x = cursor
+    for key, longname, msg, label, lw in TOGGLES:
+        p.box(key, "live.toggle", pres=[x, ROW2_Y, 15.0, ROW2_H],
               extra=menu_attrs(longname, ["off", "on"], 0),
               numinlets=1, numoutlets=2, outlettype=["", "float"])
         p.box(key + "_label", "comment", label,
-              pres=[x + 17.0, 96.0, lw, 16.0], extra={"fontsize": 9.0}, numoutlets=0)
+              pres=[x + 17.0, ROW2_Y, lw, 16.0], extra={"fontsize": 9.0}, numoutlets=0)
+        toggles.append((key, longname, msg, label, x, lw))
+        x += 17.0 + lw + 3.0
 
-    buttons = ["Mutate", "Return", "Reseed", "Rhythm", "Pitch",
-               "Accent", "Slide", "Capture"]
-    for i, name in enumerate(buttons):
-        p.box("btn_" + name.lower(), "message", name,
-              pres=[4.0 + i * 58.0, 120.0, 54.0, 18.0],
-              extra={"fontsize": 9.0}, numinlets=2, numoutlets=1)
+    BUTTON_GROUPS = [
+        ("generate", "teal", ["Mutate", "Return", "Reseed"]),
+        ("regenerate layer", "coral", ["Rhythm", "Pitch", "Accent", "Slide"]),
+        ("utility", "gray", ["Capture"]),
+    ]
+    buttons = [b for _label, _ramp, names in BUTTON_GROUPS for b in names]
+    cursor = 8.0
+    for label, ramp, names in BUTTON_GROUPS:
+        span = (len(names) - 1) * 58.0 + 54.0
+        section(label.replace(" ", "_"), label.upper(), ramp,
+                [cursor - 6.0, ROW3_PANEL_TOP, span + 12.0, ROW3_PANEL_H])
+        for i, name in enumerate(names):
+            p.box("btn_" + name.lower(), "message", name,
+                  pres=[cursor + i * 58.0, ROW3_Y, 54.0, ROW3_H],
+                  extra={"fontsize": 9.0}, numinlets=2, numoutlets=1)
+        cursor += span + GROUP_GAP
 
     # ---------------------------------------------------------------- core + clock
     p.obj("js", "js pg-core.js", numinlets=1, numoutlets=3)
