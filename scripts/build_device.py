@@ -583,7 +583,12 @@ def build(kind="instrument"):
     p.sig("fold_drive_amt", "*~ 3.2", 2)
     p.sig("fold_drive_gain", "+~ 1.", 2)
     p.sig("fold_pre", "*~", 2)
-    p.sig("fold_sin", "sin~", 1)
+    # vanilla Max has no signal-rate sin~; the standard trick is cycle~ with
+    # frequency held at 0 and the signal to be shaped fed into its phase
+    # inlet instead — cycle~ wraps that phase automatically, which is exactly
+    # the foldover behavior a wavefolder wants
+    p.sig("fold_zero", "sig~ 0.", 1)
+    p.sig("fold_sin", "cycle~", 2)
     p.sig("fold_inv", "!-~ 1.", 2)
     p.sig("fold_dry", "*~", 2)
     p.sig("fold_wet", "*~", 2)
@@ -592,7 +597,8 @@ def build(kind="instrument"):
     p.connect("fold_drive_amt", 0, "fold_drive_gain", 0)
     p.connect("osc_mix", 0, "fold_pre", 0)
     p.connect("fold_drive_gain", 0, "fold_pre", 1)
-    p.connect("fold_pre", 0, "fold_sin", 0)
+    p.connect("fold_zero", 0, "fold_sin", 0)
+    p.connect("fold_pre", 0, "fold_sin", 1)
     p.connect("l_fold", 0, "fold_inv", 0)
     p.connect("osc_mix", 0, "fold_dry", 0)
     p.connect("fold_inv", 0, "fold_dry", 1)
