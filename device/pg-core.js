@@ -12,8 +12,12 @@ outlets = 3; // 0: synth params, 1: note events, 2: display/debug
 var STEPS_PER_BAR = 16;
 var TICKS_PER_STEP = 120; // 480 ppq / 4
 
-// §4.3 novelty budget weights (normalized against the largest weight)
-var BUDGET = { pitch: 0.25, rhythm: 0.25, accent: 0.15, slide: 0.10, timbre: 0.15, wet: 0.10 };
+// §4.3 novelty budget weights (normalized against the largest weight). timbre
+// carries more weight than the v0.1 spec table: mode is the biggest audible
+// character difference the device has, and at the old 0.15 it almost never
+// swapped on a medium mutation — sound design read as static regardless of
+// how far Novelty was turned up.
+var BUDGET = { pitch: 0.25, rhythm: 0.25, accent: 0.15, slide: 0.10, timbre: 0.20, wet: 0.12 };
 
 // §1.6 tonal gravity: semitones above root -> attractor weight (2-octave field)
 // §1.5 root octave = C1: the second octave is rare color, not structure
@@ -110,10 +114,12 @@ var GROOVES = [
 
 // macros / params (defaults match the device's parameter_initial values)
 var P = {
-  density: 0.5, novelty: 0.35, chunk: 0.55, squelch: 0.5, drive: 0.35,
+  density: 0.5, novelty: 0.45, chunk: 0.55, squelch: 0.5, drive: 0.35,
   cutoff: 0.45, decay: 0.5, sub: 0.6, wet: 0.3,
   interlock: 0.5,          // §1.4 bipolar downbeat rest bias (0.5 = as the family)
   subsat: 0.35, width: 0.6, // §2.5 sub saturation, §3.4 stereo width
+  wave: 0.3, pw: 0.5, fold: 0.0,      // §2.6 saw<->pulse blend, pulse width, wavefolder
+  wobrate: 0.35, wobdepth: 0.0,       // §2.7 shared filter+pitch wobble LFO
   groove: 1, root: 36, bars: 2,
   fmode: 0,                // §2.1 filter mode: 0 = follow the groove, 1..7 = forced
   suboct: 0,               // §2.5 sub octave: 0 = -1, 1 = -2
@@ -741,7 +747,10 @@ function applyFreezes(child, parent) {
 function mutatePhrase(parent, novelty) {
   var rng = makeRng(parent.seed * 31 + parent.generation * 7 + idCounter * 13 + 1);
   var groove = grooveNow();
-  var depth = novelty < 0.33 ? 0 : (novelty < 0.7 ? 1 : 2);
+  // full regeneration used to require novelty >= 0.7 — far enough into the
+  // dial's range that most users would never find it. Lowered so a genuinely
+  // fresh phrase is reachable at a moderate setting, not just an extreme one.
+  var depth = novelty < 0.22 ? 0 : (novelty < 0.55 ? 1 : 2);
   var alloc = {}, k;
   for (k in BUDGET) alloc[k] = clamp(novelty * BUDGET[k] / 0.25, 0, 1); // §4.3
 
@@ -878,8 +887,13 @@ function phraseAdvance() {
   if (freezeLeft > 0) { freezeLeft--; pushSynth(); return; }
 
   var r = chaosRng(); // phrase-level chaos domain (§4.1)
-  var pReturn = phrase.generation > 0 ? (0.10 + 0.35 * (1 - P.novelty)) : 0;
-  var pMut = clamp((0.2 + 0.6 * P.novelty) * grooveNow().mut, 0, 0.9);
+  // §4.4: return pull scales down with novelty, mutation pressure scales up.
+  // The old curve put the two at near parity even at a middling novelty
+  // setting — the generator spent more cycles pulling backward into its own
+  // lineage or just repeating than pushing into new material, which is what
+  // read as "generic" at default settings rather than as a deliberate loop.
+  var pReturn = phrase.generation > 0 ? clamp(0.05 + 0.24 * (1 - P.novelty), 0, 0.4) : 0;
+  var pMut = clamp((0.28 + 0.58 * P.novelty) * grooveNow().mut, 0, 0.9);
   if (r < pReturn) {
     // deep in a lineage, the pull is toward the root, not just one step back
     if (phrase.generation >= 3 && chaosRng() < 0.45) returnToRoot();
@@ -967,6 +981,16 @@ function pushSynth() {
   outlet(0, "wflr", clamp(0.55 - P.wet * 0.25, 0.2, 0.7));
   outlet(0, "wdec", lerp(240, 900, P.wet));
   outlet(0, "dmod", 0.8 + P.wet * 3.2); // §3.2 tap modulation depth in ms (diffusion)
+  // §2.6 waveform shaping: saw<->pulse blend, pulse width (kept off the hard
+  // edges where a rect~ cycle collapses toward silence), wavefolder depth
+  outlet(0, "wave", P.wave);
+  outlet(0, "pw", 0.06 + P.pw * 0.88);
+  outlet(0, "fold", P.fold);
+  // §2.7 one wobble LFO shared by cutoff and pitch, so the two move together
+  // instead of drifting apart into two independent, less legible modulations
+  outlet(0, "wobrate", 0.06 * Math.pow(2, P.wobrate * 7.5), 60);
+  outlet(0, "wobcut", P.wobdepth * 2200, 40);
+  outlet(0, "wobpitch", P.wobdepth * 0.6, 40);
 }
 
 function pushDelays() {
@@ -1257,6 +1281,11 @@ function sub(v) { P.sub = clamp(v, 0, 1); pushSynth(); }
 function wet(v) { P.wet = clamp(v, 0, 1); pushSynth(); }
 function subsat(v) { P.subsat = clamp(v, 0, 1); pushSynth(); }   // §2.5
 function width(v) { P.width = clamp(v, 0, 1); pushSynth(); }     // §3.4
+function wave(v) { P.wave = clamp(v, 0, 1); pushSynth(); }       // §2.6 saw<->pulse blend
+function pw(v) { P.pw = clamp(v, 0, 1); pushSynth(); }           // §2.6 pulse width
+function fold(v) { P.fold = clamp(v, 0, 1); pushSynth(); }       // §2.6 wavefolder depth
+function wobrate(v) { P.wobrate = clamp(v, 0, 1); pushSynth(); } // §2.7 wobble LFO rate
+function wobdepth(v) { P.wobdepth = clamp(v, 0, 1); pushSynth(); } // §2.7 wobble LFO depth
 function suboct(i) { P.suboct = Math.floor(i) ? 1 : 0; }         // §2.5 -1 / -2
 
 function fmode(i) { // §2.1 — 0 follows the groove's affinity, 1..7 force a mode
@@ -1303,7 +1332,10 @@ function frzr(v) { P.frzr = v ? 1 : 0; }
 function frzp(v) { P.frzp = v ? 1 : 0; }
 function frzt(v) { P.frzt = v ? 1 : 0; }
 
-function Mutate() { if (phrase) adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.25))); } // §5.3
+// §5.3 — an explicit button press is a request for something different, so it
+// carries its own floor above the medium-mutation threshold rather than
+// inheriting a Novelty dial that may be sitting low for the ambient drift
+function Mutate() { if (phrase) adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.4))); }
 function Return() { // §5.3 — one press steps back a generation, two in a row go to the root
   var now = Date.now();
   if (lastReturnMs > 0 && now - lastReturnMs < 700) returnToRoot();

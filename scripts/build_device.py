@@ -294,17 +294,24 @@ def build(kind="instrument"):
     # maps; the message name is the handler in pg-core.js.
     DIAL_GROUPS = [
         ("macro", "gray", [
-            ("Novelty", 0.35, "novelty"), ("Density", 0.5, "density"),
+            ("Novelty", 0.45, "novelty"), ("Density", 0.5, "density"),
             ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
         ]),
         ("tone", "coral", [
             ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
             ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
             ("Decay", 0.5, "decay"),
+            # §2.6 waveform shaping: saw<->pulse blend, pulse width, wavefolder
+            ("Wave", 0.3, "wave"), ("PWM", 0.5, "pw"), ("Fold", 0.0, "fold"),
         ]),
         ("sub + wet", "teal", [
             ("Sub", 0.6, "sub"), ("SubSat", 0.35, "subsat"),  # §2.5 sub saturation
             ("Wet", 0.3, "wet"), ("Width", 0.6, "width"),     # §3.4 stereo width
+        ]),
+        ("wobble", "amber", [
+            # §2.7 one LFO, shared: rate (Hz) and a depth that swings both the
+            # filter cutoff and pitch together so the movement reads as one thing
+            ("WobRate", 0.35, "wobrate"), ("WobDepth", 0.0, "wobdepth"),
         ]),
     ]
     dials = [d for _label, _ramp, group in DIAL_GROUPS for d in group]
@@ -454,6 +461,11 @@ def build(kind="instrument"):
                     "asym",
                     # §3.4 stereo: return width and the frequency below which it stays mono
                     "width", "monof",
+                    # §2.6 waveform shaping: saw<->pulse blend, pulse width, wavefolder depth
+                    "wave", "pw", "fold",
+                    # §2.7 shared wobble LFO: rate (Hz), and depth split into its
+                    # cutoff swing (Hz) and pitch swing (semitones, pre-mtof~)
+                    "wobrate", "wobcut", "wobpitch",
                     # §5.4 serialized generator state, headed for [pattr]
                     "state"]
     p.obj("route_synth", "route " + " ".join(synth_params),
@@ -491,6 +503,12 @@ def build(kind="instrument"):
     p.sig("l_pitch", "line~", 2, numoutlets=2)    # note pitch (MIDI, glides)
     p.sig("l_spitch", "line~", 2, numoutlets=2)   # sub pitch (MIDI, folded 24-35)
     p.sig("l_monof", "line~", 2, numoutlets=2)    # §3.4 mono-below / wet crossover Hz
+    p.sig("l_wave", "line~", 2, numoutlets=2)     # §2.6 saw<->pulse blend
+    p.sig("l_pw", "line~", 2, numoutlets=2)       # §2.6 pulse width
+    p.sig("l_fold", "line~", 2, numoutlets=2)     # §2.6 wavefolder depth
+    p.sig("l_wobrate", "line~", 2, numoutlets=2)  # §2.7 wobble LFO rate (Hz)
+    p.sig("l_wobcut", "line~", 2, numoutlets=2)   # §2.7 wobble cutoff swing (Hz)
+    p.sig("l_wobpitch", "line~", 2, numoutlets=2) # §2.7 wobble pitch swing (semitones)
 
     p.connect("route_synth", synth_params.index("cutoff"), "l_cutoff", 0)
     p.connect("route_synth", synth_params.index("envd"), "l_envd", 0)
@@ -499,6 +517,24 @@ def build(kind="instrument"):
     p.connect("route_note", note_params.index("pitch"), "l_pitch", 0)
     p.connect("route_note", note_params.index("spitch"), "l_spitch", 0)
     p.connect("route_synth", synth_params.index("monof"), "l_monof", 0)
+    p.connect("route_synth", synth_params.index("wave"), "l_wave", 0)
+    p.connect("route_synth", synth_params.index("pw"), "l_pw", 0)
+    p.connect("route_synth", synth_params.index("fold"), "l_fold", 0)
+    p.connect("route_synth", synth_params.index("wobrate"), "l_wobrate", 0)
+    p.connect("route_synth", synth_params.index("wobcut"), "l_wobcut", 0)
+    p.connect("route_synth", synth_params.index("wobpitch"), "l_wobpitch", 0)
+
+    # §2.7 one wobble LFO, shared by the filter cutoff and both oscillators'
+    # pitch, so the two move together as one audible wobble instead of drifting
+    # apart into two independent modulations
+    p.sig("wobble_lfo", "cycle~", 2)
+    p.sig("wob_cut_add", "*~ 0.", 2)
+    p.sig("wob_pitch_add", "*~ 0.", 2)
+    p.connect("l_wobrate", 0, "wobble_lfo", 0)
+    p.connect("wobble_lfo", 0, "wob_cut_add", 0)
+    p.connect("l_wobcut", 0, "wob_cut_add", 1)
+    p.connect("wobble_lfo", 0, "wob_pitch_add", 0)
+    p.connect("l_wobpitch", 0, "wob_pitch_add", 1)
 
     # ---------------------------------------------------------------- envelopes
     # amp: fast attack, chunk-scaled decay/sustain; filter: snappy, sustain 0
@@ -511,26 +547,66 @@ def build(kind="instrument"):
     p.connect("route_note", note_params.index("fdec"), "adsr_filt", 2)
 
     # ---------------------------------------------------------------- oscillators
+    # §2.6 Wave crossfades saw <-> pulse (rect~, width set by PWM) rather than
+    # just mixing them, so the blend is a single timbral sweep instead of a
+    # loudness-changing add. §2.7 the wobble LFO's pitch swing is summed in
+    # before mtof~, in MIDI-note space, so it reads as true vibrato.
+    p.sig("pitch_wob", "+~", 2)
     p.sig("mtof_main", "mtof~", 1)
     p.sig("osc_saw", "saw~", 2)
     p.sig("osc_rect", "rect~", 2)
-    p.sig("saw_gain", "*~ 0.6", 2)
-    p.sig("rect_gain", "*~ 0.45", 2)
+    p.sig("wave_inv", "!-~ 1.", 2)
+    p.sig("saw_gain", "*~", 2)
+    p.sig("rect_gain", "*~", 2)
+    p.sig("wave_saw_amt", "*~ 0.85", 2)
+    p.sig("wave_rect_amt", "*~ 0.75", 2)
     p.sig("osc_mix", "+~", 2)
-    p.connect("l_pitch", 0, "mtof_main", 0)
+    p.connect("l_pitch", 0, "pitch_wob", 0)
+    p.connect("wob_pitch_add", 0, "pitch_wob", 1)
+    p.connect("pitch_wob", 0, "mtof_main", 0)
     p.connect("mtof_main", 0, "osc_saw", 0)
     p.connect("mtof_main", 0, "osc_rect", 0)
+    p.connect("l_pw", 0, "osc_rect", 1)
+    p.connect("l_wave", 0, "wave_inv", 0)
+    p.connect("wave_inv", 0, "wave_saw_amt", 0)
+    p.connect("wave_saw_amt", 0, "saw_gain", 1)
+    p.connect("l_wave", 0, "wave_rect_amt", 0)
+    p.connect("wave_rect_amt", 0, "rect_gain", 1)
     p.connect("osc_saw", 0, "saw_gain", 0)
     p.connect("osc_rect", 0, "rect_gain", 0)
     p.connect("saw_gain", 0, "osc_mix", 0)
     p.connect("rect_gain", 0, "osc_mix", 1)
+
+    # §2.6 wavefolder: driving a copy of the oscillator mix hard into sin~ folds
+    # it back on itself past +-0.5 cycle, adding harmonics that move independently
+    # of the filter. Crossfaded by Fold so 0 leaves the dry mix untouched.
+    p.sig("fold_drive_amt", "*~ 3.2", 2)
+    p.sig("fold_drive_gain", "+~ 1.", 2)
+    p.sig("fold_pre", "*~", 2)
+    p.sig("fold_sin", "sin~", 1)
+    p.sig("fold_inv", "!-~ 1.", 2)
+    p.sig("fold_dry", "*~", 2)
+    p.sig("fold_wet", "*~", 2)
+    p.sig("fold_out", "+~", 2)
+    p.connect("l_fold", 0, "fold_drive_amt", 0)
+    p.connect("fold_drive_amt", 0, "fold_drive_gain", 0)
+    p.connect("osc_mix", 0, "fold_pre", 0)
+    p.connect("fold_drive_gain", 0, "fold_pre", 1)
+    p.connect("fold_pre", 0, "fold_sin", 0)
+    p.connect("l_fold", 0, "fold_inv", 0)
+    p.connect("osc_mix", 0, "fold_dry", 0)
+    p.connect("fold_inv", 0, "fold_dry", 1)
+    p.connect("fold_sin", 0, "fold_wet", 0)
+    p.connect("l_fold", 0, "fold_wet", 1)
+    p.connect("fold_dry", 0, "fold_out", 0)
+    p.connect("fold_wet", 0, "fold_out", 1)
 
     # ---------------------------------------------------------------- drive -> filter
     p.sig("pre_drive", "*~ 1.", 2)     # drive amount (smoothed)
     p.sig("dmul_mul", "*~ 1.", 2)      # per-note accent drive
     p.sig("sat1", "tanh~", 1)
     p.sig("filter", "svf~ 800 0.5", 3, numoutlets=4)
-    p.connect("osc_mix", 0, "pre_drive", 0)
+    p.connect("fold_out", 0, "pre_drive", 0)
     p.connect("l_drv", 0, "pre_drive", 1)
     p.connect("pre_drive", 0, "dmul_mul", 0)
     p.connect("route_note", note_params.index("dmul"), "dmul_mul", 1)
@@ -542,6 +618,7 @@ def build(kind="instrument"):
     p.sig("envd_mul", "*~ 1.", 2)
     p.sig("fmul_mul", "*~ 1.", 2)
     p.sig("cut_sum", "+~", 2)
+    p.sig("cut_wob", "+~", 2)   # §2.7 wobble LFO's cutoff swing added in last
     p.sig("cut_clip", "clip~ 40. 12000.", 3)
     p.connect("adsr_filt", 0, "envd_mul", 0)
     p.connect("l_envd", 0, "envd_mul", 1)
@@ -549,7 +626,9 @@ def build(kind="instrument"):
     p.connect("route_note", note_params.index("fmul"), "fmul_mul", 1)
     p.connect("fmul_mul", 0, "cut_sum", 0)
     p.connect("l_cutoff", 0, "cut_sum", 1)
-    p.connect("cut_sum", 0, "cut_clip", 0)
+    p.connect("cut_sum", 0, "cut_wob", 0)
+    p.connect("wob_cut_add", 0, "cut_wob", 1)
+    p.connect("cut_wob", 0, "cut_clip", 0)
     p.connect("cut_clip", 0, "filter", 1)
 
     # ---------------------------------------------------------------- post filter / VCA
@@ -623,6 +702,7 @@ def build(kind="instrument"):
     # takes back the level that drive adds so the control is a timbre, not a
     # loudness. The duck then pulls the sub down under a resonant filter peak,
     # which is where a fat sub and a screaming resonance would otherwise fight.
+    p.sig("spitch_wob", "+~", 2)  # §2.7 shares the main osc's wobble pitch swing
     p.sig("mtof_sub", "mtof~", 1)
     p.sig("osc_sub", "cycle~", 2)
     p.sig("sub_sat_pre", "*~ 1.5", 2)
@@ -633,7 +713,9 @@ def build(kind="instrument"):
     p.sig("sub_duck_inv", "!-~ 1.", 2)
     p.sig("sub_duck_mul", "*~ 1.", 2)
     p.sig("sub_mul", "*~ 0.6", 2)
-    p.connect("l_spitch", 0, "mtof_sub", 0)
+    p.connect("l_spitch", 0, "spitch_wob", 0)
+    p.connect("wob_pitch_add", 0, "spitch_wob", 1)
+    p.connect("spitch_wob", 0, "mtof_sub", 0)
     p.connect("mtof_sub", 0, "osc_sub", 0)
     p.connect("osc_sub", 0, "sub_sat_pre", 0)
     p.connect("route_synth", synth_params.index("subdrv"), "sub_sat_pre", 1)
