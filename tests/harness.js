@@ -1,130 +1,34 @@
 #!/usr/bin/env node
 // harness.js — runs device/pg-core.js outside Max with shimmed Max APIs
 // and asserts the musical invariants from DESIGN.md.
+//
+// The Max shims, sandbox and runner live in m4lkit/maxtest.js; this file is
+// only the PG-specific tests and a few PG-specific readers.
 
 "use strict";
-var fs = require("fs");
 var path = require("path");
-var vm = require("vm");
+var mt = require("../m4lkit/maxtest");
 
-var SRC = fs.readFileSync(path.join(__dirname, "..", "device", "pg-core.js"), "utf8");
+var CORE = path.join(__dirname, "..", "device", "pg-core.js");
+var PATCH = path.join(__dirname, "..", "device", "PG Bass Generator.maxpat");
 
-// ---------------------------------------------------------------- Max shims
+var makeSandbox = mt.loadCore(CORE, { outlets: 3 });   // 0 synth, 1 note, 2 display
+var call = mt.call, callArgs = mt.callArgs, tickSteps = mt.tick;
+var collect = mt.collect, collectTimed = mt.collectTimed;
 
-function makeSandbox() {
-  var state = {
-    now: 1000000,          // fake clock (ms)
-    tasks: [],             // scheduled Task shims
-    out: [[], [], []],     // recorded outlet messages per outlet
-    outT: [[], [], []]     // fake-clock time each message was emitted
-  };
+var run = mt.runner("pg-core.js harness");
+var test = run.test, assert = run.assert;
 
-  function FakeTask(fn, owner) {
-    this.fn = fn;
-    this.owner = owner || null;
-    this.at = -1;
-  }
-  FakeTask.prototype.schedule = function (ms) {
-    this.at = state.now + (ms || 0);
-    if (state.tasks.indexOf(this) < 0) state.tasks.push(this);
-  };
-  FakeTask.prototype.cancel = function () { this.at = -1; };
-
-  var sandbox = {
-    Math: Math, JSON: JSON, String: String, parseInt: parseInt,
-    isNaN: isNaN, Object: Object, Array: Array,
-    Date: { now: function () { return state.now; } },
-    Task: FakeTask,
-    post: function () {},
-    outlet: function (idx) {
-      state.out[idx].push(Array.prototype.slice.call(arguments, 1));
-      state.outT[idx].push(state.now);
-    }
-  };
-  sandbox.__state = state;
-
-  // advance the fake clock, firing due Task shims in time order
-  state.advance = function (ms) {
-    var target = state.now + ms;
-    for (;;) {
-      var best = null;
-      for (var i = 0; i < state.tasks.length; i++) {
-        var t = state.tasks[i];
-        if (t.at >= 0 && t.at <= target && (!best || t.at < best.at)) best = t;
-      }
-      if (!best) break;
-      state.now = best.at;
-      best.at = -1;
-      best.fn.call(best.owner);
-    }
-    state.now = target;
-  };
-
-  vm.createContext(sandbox);
-  vm.runInContext(SRC, sandbox, { filename: "pg-core.js" });
-  return sandbox;
-}
-
-function call(sb, name) {
-  var args = Array.prototype.slice.call(arguments, 2);
-  return vm.runInContext(name, sb).apply(null, args);
-}
-
-function tickSteps(sb, n, stepMs) {
-  stepMs = stepMs || 125;
-  for (var i = 0; i < n; i++) {
-    call(sb, "bang");
-    sb.__state.advance(stepMs);
-  }
-}
-
+// the JSON blob the core answers "dump" with on the display outlet
 function lastDump(sb) {
-  var msgs = sb.__state.out[2];
-  for (var i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i][0] === "dump") return JSON.parse(msgs[i][1]);
-  }
-  throw new Error("no dump message found");
-}
-
-function collect(sb, outletIdx, selector) {
-  return sb.__state.out[outletIdx].filter(function (m) { return m[0] === selector; });
-}
-
-// same as collect(), but pairs each message with the fake-clock time it fired
-function collectTimed(sb, outletIdx, selector) {
-  var out = [];
-  sb.__state.out[outletIdx].forEach(function (m, i) {
-    if (m[0] === selector) out.push({ msg: m, t: sb.__state.outT[outletIdx][i] });
-  });
-  return out;
-}
-
-function callArgs(sb, name, argArray) {
-  return vm.runInContext(name, sb).apply(null, argArray);
+  return JSON.parse(mt.last(sb, 2, "dump")[1]);
 }
 
 // the state list Max would have stored in [pattr pg_state]
+// outlet(0, "state", array) — Max flattens the Array argument into a list
 function lastState(sb) {
-  var msgs = collect(sb, 0, "state");
-  assert(msgs.length > 0, "no state message emitted");
-  // outlet(0, "state", array) — Max flattens the Array argument into a list
-  return msgs[msgs.length - 1][1];
+  return mt.last(sb, 0, "state")[1];
 }
-
-// ---------------------------------------------------------------- test runner
-
-var failures = 0, passed = 0;
-function test(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log("  ok  " + name);
-  } catch (e) {
-    failures++;
-    console.log("FAIL  " + name + "\n      " + (e && e.message ? e.message : e));
-  }
-}
-function assert(cond, msg) { if (!cond) throw new Error(msg); }
 
 // ---------------------------------------------------------------- tests
 
@@ -893,11 +797,8 @@ test("novelty budget gates timbre and wet drift, not just notes", function () {
   assert(hi > 0.02, "timbre/wet never drift even at full novelty");
 });
 
-function lastParam(sb, sel) {
-  var m = collect(sb, 0, sel);
-  assert(m.length > 0, "no " + sel + " emitted");
-  return m[m.length - 1][1];
-}
+// the most recent value of a synth parameter (outlet 0)
+function lastParam(sb, sel) { return mt.last(sb, 0, sel)[1]; }
 
 test("filter mode, nonlinearity and shelf track mode and squelch", function () {
   var last = lastParam;
@@ -1282,7 +1183,7 @@ test("ties become overlapping MIDI notes, not held ones", function () {
     if (tie < 0) continue;
     found = true;
 
-    var evs = vm.runInContext("noteEvents(phrase)", sb);
+    var evs = mt.evalIn(sb, "noteEvents(phrase)");
     var a = null, b = null;
     // round, don't floor: a rushed onset starts fractionally *before* its own
     // step, so flooring files it under the previous step and picks the wrong event
@@ -1302,7 +1203,7 @@ test("captured note events reproduce the phrase in beats", function () {
   call(sb, "density", 0.7);
   call(sb, "dump");
   var d = lastDump(sb).phrase;
-  var evs = vm.runInContext("noteEvents(phrase)", sb);
+  var evs = mt.evalIn(sb, "noteEvents(phrase)");
 
   var onsets = d.onsets.filter(Boolean).length;
   assert(evs.length === onsets,
@@ -1337,17 +1238,8 @@ test("captured note events reproduce the phrase in beats", function () {
 // new outlet(0, "…") in pg-core.js from landing on an unrouted [route] outlet
 // and silently doing nothing inside Live.
 test("every selector the core emits is routed in the built device", function () {
-  var patch = path.join(__dirname, "..", "device", "PG Bass Generator.maxpat");
-  assert(fs.existsSync(patch), "device not built; run scripts/build_device.py");
-  var boxes = JSON.parse(fs.readFileSync(patch, "utf8")).patcher.boxes;
-  var routed = {}, routeCount = 0;
-  boxes.forEach(function (b) {
-    var t = b.box.text;
-    if (!t || t.indexOf("route ") !== 0) return;
-    routeCount++;
-    t.split(/\s+/).slice(1).forEach(function (sel) { routed[sel] = true; });
-  });
-  assert(routeCount >= 3, "expected the synth/note/display routes, found " + routeCount);
+  var routed = mt.routedSelectors(mt.readPatch(PATCH));
+  assert(routed.routes >= 3, "expected the synth/note/display routes, found " + routed.routes);
 
   // exercise everything that emits: startup, every macro, every button
   var sb = makeSandbox();
@@ -1364,52 +1256,30 @@ test("every selector the core emits is routed in the built device", function () 
   tickSteps(sb, 64);
   call(sb, "dump");
 
-  var emitted = {};
-  [0, 1, 2].forEach(function (o) {
-    sb.__state.out[o].forEach(function (m) {
-      if (typeof m[0] === "string") emitted[m[0]] = true;
-    });
-  });
-  Object.keys(emitted).forEach(function (sel) {
-    assert(routed[sel], "the core emits \"" + sel + "\" but the patch does not route it");
+  var emitted = mt.emittedSelectors(sb);
+  emitted.forEach(function (sel) {
+    assert(routed.selectors.indexOf(sel) >= 0, "the core emits \"" + sel + "\" but the patch does not route it");
   });
   // and nothing in the patch is waiting on a selector the core never sends
-  Object.keys(routed).forEach(function (sel) {
-    assert(emitted[sel], "the patch routes \"" + sel + "\" but the core never emits it");
+  routed.selectors.forEach(function (sel) {
+    assert(emitted.indexOf(sel) >= 0, "the patch routes \"" + sel + "\" but the core never emits it");
   });
 });
 
 // the other half of the same contract: every control in the patch has to reach
 // a handler that exists, or the dial turns and nothing happens
 test("every UI control in the built device reaches a core handler", function () {
-  var patch = path.join(__dirname, "..", "device", "PG Bass Generator.maxpat");
-  var boxes = JSON.parse(fs.readFileSync(patch, "utf8")).patcher.boxes;
+  var controls = mt.patchControls(mt.readPatch(PATCH));
+  assert(controls.length >= 20, "found only " + controls.length + " controls to check");
   var sb = makeSandbox();
-  var msgs = [], seen = {};
-  boxes.forEach(function (b) {
-    var t = b.box.text;
-    if (!t) return;
-    if (t.indexOf("prepend ") === 0) {          // dials, menus, toggles
-      var m = t.split(/\s+/)[1];
-      if (m !== "set" && m !== "Restore" && m !== "pos" && !seen[m]) { seen[m] = 1; msgs.push([m, 0.5]); }
-    } else if (b.box.maxclass === "message" && b.box.presentation === 1 &&
-               /^[A-Z][A-Za-z]+$/.test(t) && !seen[t]) {   // the button row
-      seen[t] = 1; msgs.push([t, null]);
-    }
-  });
-  assert(msgs.length >= 20, "found only " + msgs.length + " controls to check");
-  msgs.forEach(function (row) {
-    var fn;
-    try { fn = vm.runInContext("typeof " + row[0], sb); }
-    catch (e) { fn = "missing"; }
-    assert(fn === "function",
-      "the patch sends \"" + row[0] + "\" but pg-core.js has no such handler");
-    if (row[1] === null) call(sb, row[0]);
-    else call(sb, row[0], row[1]);
+  controls.forEach(function (c) {
+    assert(mt.hasHandler(sb, c.name),
+      "the patch sends \"" + c.name + "\" but pg-core.js has no such handler");
+    if (c.value === undefined) call(sb, c.name);
+    else call(sb, c.name, c.value);
   });
 });
 
 // ----------------------------------------------------------------
 
-console.log("\n" + passed + " passed, " + failures + " failed");
-process.exit(failures ? 1 : 0);
+run.finish();
