@@ -72,7 +72,8 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 ## Development
 
 - `device/pg-core.js` — the entire generative core (phrase identity, memory/lineage, tonal gravity, contour grammar, rhythmic cell families and bar form, rest grammar, accent hierarchy, directional slide logic, groove states, filter modes, novelty budget, synth parameter mapping). Legacy `js` object, strict ES5.
-- `scripts/build_device.py` — generates both devices programmatically (factory-accurate patcher JSON + verified `ampf`/`meta`/`ptch` chunk container). One `build(kind)` shares the UI, core, clock and persistence; `kind="instrument"` appends the synth and `plugout~` (`iiii`), `kind="midi"` appends `midiout` instead (`mmmm`).
+- `scripts/build_device.py` — generates both devices programmatically. One `build(kind)` shares the UI, core, clock and persistence; `kind="instrument"` appends the synth and `plugout~` (`iiii`), `kind="midi"` appends `midiout` instead (`mmmm`). Only the PG-specific parts live here: control layout, parameter lists and the voice graph.
+- `m4lkit/` — the device-independent toolkit the builder sits on: patcher JSON + `.amxd` container writer, presentation-row layout for Live controls, the `[js]`-core plumbing (controls, clock, routing, smoothing, `[pattr]` persistence, MIDI out) and reusable DSP blocks. See `m4lkit/README.md`.
 - `tests/harness.js` — Node test harness that sandboxes `pg-core.js` with a fake Max environment (Task scheduler, fake clock, outlet recorder). Two of the tests read the built `.maxpat` and check the core↔patch contract in both directions: every selector the core emits is routed somewhere in the device, and every routed selector is one the core actually sends. That's the failure mode that doesn't show up as an error — a new `outlet(0, "…")` landing on nothing, silently doing nothing inside Live.
 
 Run the tests:
