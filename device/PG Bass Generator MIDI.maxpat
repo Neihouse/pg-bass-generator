@@ -296,7 +296,7 @@
       4.0,
       3.0,
       260.0,
-      18.0
+      16.0
      ],
      "fontface": 1,
      "fontsize": 11.0
@@ -317,9 +317,9 @@
      "presentation": 1,
      "presentation_rect": [
       2.0,
-      25.0,
+      21.0,
       160.0,
-      90.0
+      74.0
      ],
      "bgcolor": [
       0.267,
@@ -353,7 +353,7 @@
      "presentation": 1,
      "presentation_rect": [
       10.0,
-      28.0,
+      24.0,
       148.0,
       12.0
      ],
@@ -385,9 +385,9 @@
      "presentation": 1,
      "presentation_rect": [
       8.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "novelty",
      "parameter_enable": 1,
@@ -426,9 +426,9 @@
      "presentation": 1,
      "presentation_rect": [
       58.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "density",
      "parameter_enable": 1,
@@ -467,9 +467,9 @@
      "presentation": 1,
      "presentation_rect": [
       108.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "interlock",
      "parameter_enable": 1,
@@ -504,9 +504,9 @@
      "presentation": 1,
      "presentation_rect": [
       164.0,
-      25.0,
+      21.0,
       410.0,
-      90.0
+      74.0
      ],
      "bgcolor": [
       0.443,
@@ -540,7 +540,7 @@
      "presentation": 1,
      "presentation_rect": [
       172.0,
-      28.0,
+      24.0,
       398.0,
       12.0
      ],
@@ -572,9 +572,9 @@
      "presentation": 1,
      "presentation_rect": [
       170.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "chunk",
      "parameter_enable": 1,
@@ -613,9 +613,9 @@
      "presentation": 1,
      "presentation_rect": [
       220.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "squelch",
      "parameter_enable": 1,
@@ -654,9 +654,9 @@
      "presentation": 1,
      "presentation_rect": [
       270.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "drive",
      "parameter_enable": 1,
@@ -695,9 +695,9 @@
      "presentation": 1,
      "presentation_rect": [
       320.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "cutoff",
      "parameter_enable": 1,
@@ -736,9 +736,9 @@
      "presentation": 1,
      "presentation_rect": [
       370.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "decay",
      "parameter_enable": 1,
@@ -777,9 +777,9 @@
      "presentation": 1,
      "presentation_rect": [
       420.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "wave",
      "parameter_enable": 1,
@@ -818,9 +818,9 @@
      "presentation": 1,
      "presentation_rect": [
       470.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "pwm",
      "parameter_enable": 1,
@@ -859,9 +859,9 @@
      "presentation": 1,
      "presentation_rect": [
       520.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "fold",
      "parameter_enable": 1,
@@ -896,9 +896,9 @@
      "presentation": 1,
      "presentation_rect": [
       576.0,
-      25.0,
+      21.0,
       210.0,
-      90.0
+      74.0
      ],
      "bgcolor": [
       0.031,
@@ -932,7 +932,7 @@
      "presentation": 1,
      "presentation_rect": [
       584.0,
-      28.0,
+      24.0,
       198.0,
       12.0
      ],
@@ -964,9 +964,9 @@
      "presentation": 1,
      "presentation_rect": [
       582.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "sub",
      "parameter_enable": 1,
@@ -1005,9 +1005,9 @@
      "presentation": 1,
      "presentation_rect": [
       632.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "subsat",
      "parameter_enable": 1,
@@ -1046,9 +1046,9 @@
      "presentation": 1,
      "presentation_rect": [
       682.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "wet",
      "parameter_enable": 1,
@@ -1087,9 +1087,9 @@
      "presentation": 1,
      "presentation_rect": [
       732.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "width",
      "parameter_enable": 1,
@@ -1124,9 +1124,9 @@
      "presentation": 1,
      "presentation_rect": [
       788.0,
-      25.0,
+      21.0,
       110.0,
-      90.0
+      74.0
      ],
      "bgcolor": [
       0.388,
@@ -1160,7 +1160,7 @@
      "presentation": 1,
      "presentation_rect": [
       796.0,
-      28.0,
+      24.0,
       98.0,
       12.0
      ],
@@ -1192,9 +1192,9 @@
      "presentation": 1,
      "presentation_rect": [
       794.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "wobrate",
      "parameter_enable": 1,
@@ -1233,9 +1233,9 @@
      "presentation": 1,
      "presentation_rect": [
       844.0,
-      44.0,
+      36.0,
       48.0,
-      64.0
+      56.0
      ],
      "varname": "wobdepth",
      "parameter_enable": 1,
@@ -1270,9 +1270,9 @@
      "presentation": 1,
      "presentation_rect": [
       2.0,
-      123.0,
+      98.0,
       426.0,
-      36.0
+      33.0
      ],
      "bgcolor": [
       0.388,
@@ -1306,7 +1306,7 @@
      "presentation": 1,
      "presentation_rect": [
       10.0,
-      126.0,
+      101.0,
       414.0,
       12.0
      ],
@@ -1339,7 +1339,7 @@
      "presentation": 1,
      "presentation_rect": [
       8.0,
-      140.0,
+      113.0,
       112.0,
       15.0
      ],
@@ -1388,7 +1388,7 @@
      "presentation": 1,
      "presentation_rect": [
       124.0,
-      140.0,
+      113.0,
       92.0,
       15.0
      ],
@@ -1438,7 +1438,7 @@
      "presentation": 1,
      "presentation_rect": [
       220.0,
-      140.0,
+      113.0,
       58.0,
       15.0
      ],
@@ -1492,7 +1492,7 @@
      "presentation": 1,
      "presentation_rect": [
       282.0,
-      140.0,
+      113.0,
       70.0,
       15.0
      ],
@@ -1537,7 +1537,7 @@
      "presentation": 1,
      "presentation_rect": [
       356.0,
-      140.0,
+      113.0,
       66.0,
       15.0
      ],
@@ -1576,9 +1576,9 @@
      "presentation": 1,
      "presentation_rect": [
       430.0,
-      123.0,
+      98.0,
       197.0,
-      36.0
+      33.0
      ],
      "bgcolor": [
       0.447,
@@ -1612,7 +1612,7 @@
      "presentation": 1,
      "presentation_rect": [
       438.0,
-      126.0,
+      101.0,
       185.0,
       12.0
      ],
@@ -1644,7 +1644,7 @@
      "presentation": 1,
      "presentation_rect": [
       436.0,
-      140.0,
+      113.0,
       15.0,
       15.0
      ],
@@ -1684,7 +1684,7 @@
      "presentation": 1,
      "presentation_rect": [
       453.0,
-      140.0,
+      113.0,
       30.0,
       16.0
      ],
@@ -1710,7 +1710,7 @@
      "presentation": 1,
      "presentation_rect": [
       486.0,
-      140.0,
+      113.0,
       15.0,
       15.0
      ],
@@ -1750,7 +1750,7 @@
      "presentation": 1,
      "presentation_rect": [
       503.0,
-      140.0,
+      113.0,
       26.0,
       16.0
      ],
@@ -1776,7 +1776,7 @@
      "presentation": 1,
      "presentation_rect": [
       532.0,
-      140.0,
+      113.0,
       15.0,
       15.0
      ],
@@ -1816,7 +1816,7 @@
      "presentation": 1,
      "presentation_rect": [
       549.0,
-      140.0,
+      113.0,
       26.0,
       16.0
      ],
@@ -1842,7 +1842,7 @@
      "presentation": 1,
      "presentation_rect": [
       578.0,
-      140.0,
+      113.0,
       15.0,
       15.0
      ],
@@ -1882,7 +1882,7 @@
      "presentation": 1,
      "presentation_rect": [
       595.0,
-      140.0,
+      113.0,
       26.0,
       16.0
      ],
@@ -1904,9 +1904,9 @@
      "presentation": 1,
      "presentation_rect": [
       2.0,
-      167.0,
+      134.0,
       182.0,
-      38.0
+      34.0
      ],
      "bgcolor": [
       0.031,
@@ -1940,7 +1940,7 @@
      "presentation": 1,
      "presentation_rect": [
       10.0,
-      170.0,
+      137.0,
       170.0,
       12.0
      ],
@@ -1972,9 +1972,9 @@
      "presentation": 1,
      "presentation_rect": [
       8.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -1998,9 +1998,9 @@
      "presentation": 1,
      "presentation_rect": [
       66.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2024,9 +2024,9 @@
      "presentation": 1,
      "presentation_rect": [
       124.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2046,9 +2046,9 @@
      "presentation": 1,
      "presentation_rect": [
       186.0,
-      167.0,
+      134.0,
       240.0,
-      38.0
+      34.0
      ],
      "bgcolor": [
       0.443,
@@ -2082,7 +2082,7 @@
      "presentation": 1,
      "presentation_rect": [
       194.0,
-      170.0,
+      137.0,
       228.0,
       12.0
      ],
@@ -2114,9 +2114,9 @@
      "presentation": 1,
      "presentation_rect": [
       192.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2140,9 +2140,9 @@
      "presentation": 1,
      "presentation_rect": [
       250.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2166,9 +2166,9 @@
      "presentation": 1,
      "presentation_rect": [
       308.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2192,9 +2192,9 @@
      "presentation": 1,
      "presentation_rect": [
       366.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2214,9 +2214,9 @@
      "presentation": 1,
      "presentation_rect": [
       428.0,
-      167.0,
+      134.0,
       66.0,
-      38.0
+      34.0
      ],
      "bgcolor": [
       0.267,
@@ -2250,7 +2250,7 @@
      "presentation": 1,
      "presentation_rect": [
       436.0,
-      170.0,
+      137.0,
       54.0,
       12.0
      ],
@@ -2282,9 +2282,9 @@
      "presentation": 1,
      "presentation_rect": [
       434.0,
-      184.0,
+      149.0,
       54.0,
-      18.0
+      16.0
      ],
      "fontsize": 9.0
     }
@@ -2994,7 +2994,7 @@
      "presentation": 1,
      "presentation_rect": [
       352.0,
-      4.0,
+      3.0,
       252.0,
       16.0
      ],

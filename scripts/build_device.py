@@ -28,10 +28,12 @@ def build(kind="instrument"):
 
     # ---------------------------------------------------------------- UI (presentation)
     p.box("title", "comment", "PG BASS GENERATOR — Primordial Groove",
-          pres=[4.0, 3.0, 260.0, 18.0],
+          pres=[4.0, 3.0, 260.0, 16.0],
           extra={"fontface": 1, "fontsize": 11.0}, numoutlets=0)
 
     # Three rows of captioned section panels so the ~30 controls read as
+    # (Live clips a Max for Live device at 169 px tall, so the rows are
+    # packed to end at 168: anything below that never shows in Live.)
     # macro / tone / sub+wet / wobble / identity / freeze / actions instead of
     # one flat grid. The longname is what Live automates and Push maps; the
     # message name is the handler in pg-core.js.
@@ -57,7 +59,7 @@ def build(kind="instrument"):
             ("WobRate", 0.35, "wobrate"), ("WobDepth", 0.0, "wobdepth"),
         ]),
     ]
-    row1 = ui.Row(p, y=44.0, h=64.0, panel_top=25.0, panel_h=90.0)
+    row1 = ui.Row(p, y=36.0, h=56.0, panel_top=21.0, panel_h=74.0)
     for label, ramp, group in DIAL_GROUPS:
         row1.dials(label, ramp, group)
 
@@ -81,7 +83,7 @@ def build(kind="instrument"):
         ("FrzPitch", "frzp", "pit", 26.0),
         ("FrzTimbre", "frzt", "tim", 26.0),
     ]
-    row2 = ui.Row(p, y=140.0, h=15.0, panel_top=123.0, panel_h=36.0)
+    row2 = ui.Row(p, y=113.0, h=15.0, panel_top=98.0, panel_h=33.0)
     row2.menus("identity", "amber", MENUS)
     row2.toggles("freeze", "pink", TOGGLES)
 
@@ -90,7 +92,7 @@ def build(kind="instrument"):
         ("regenerate layer", "coral", ["Rhythm", "Pitch", "Accent", "Slide"]),
         ("utility", "gray", ["Capture"]),
     ]
-    row3 = ui.Row(p, y=184.0, h=18.0, panel_top=167.0, panel_h=38.0)
+    row3 = ui.Row(p, y=149.0, h=16.0, panel_top=134.0, panel_h=34.0)
     for label, ramp, names in BUTTON_GROUPS:
         row3.buttons(label, ramp, names)
 
@@ -127,7 +129,7 @@ def build(kind="instrument"):
     p.connect("js", 0, synth.key, 0)
     p.connect("js", 1, note.key, 0)
     p.connect("js", 2, disp.key, 0)
-    core.status_display(p, disp, pres=[352.0, 4.0, 252.0, 16.0])
+    core.status_display(p, disp, pres=[352.0, 3.0, 252.0, 16.0])
     core.persist_state(p, synth, pattr="pg_state")   # §5.4
 
     # The MIDI-effect build shares everything above — same core, same UI, same
