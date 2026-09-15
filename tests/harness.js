@@ -30,6 +30,9 @@ function lastState(sb) {
   return mt.last(sb, 0, "state")[1];
 }
 
+// §2.8 the phrase sound parameters, in the order the saved state stores them
+var SOUND_KEYS = ["wave", "pw", "fold", "wobrate", "wobdepth", "subsat"];
+
 // ---------------------------------------------------------------- tests
 
 console.log("pg-core.js harness\n");
@@ -605,7 +608,8 @@ test("state round-trips through the pattr list (save/reload)", function () {
   tickSteps(a, 96);
   var saved = lastState(a);
   assert(saved.length >= 20 + 8, "state list too short: " + saved.length);
-  assert(saved.length === 20 + saved[19] * 8 + 2,
+  // header, 8 atoms a step, then the tail: mode, form and the six §2.8 sound values
+  assert(saved.length === 20 + saved[19] * 8 + 2 + SOUND_KEYS.length,
     "state list length does not match its step count: " + saved.length + " vs " + saved[19]);
   saved.forEach(function (v, k) {
     assert(typeof v === "number" && isFinite(v), "non-numeric atom at " + k + ": " + v);
@@ -623,6 +627,14 @@ test("state round-trips through the pattr list (save/reload)", function () {
 
   ["id", "parentId", "generation", "seed", "bars", "contour", "mode", "form"].forEach(function (k) {
     assert(after.phrase[k] === before.phrase[k], k + " lost in restore: " + after.phrase[k]);
+  });
+  // §2.8 the phrase's own sound, and so what the synth is sent once Design applies
+  assert(before.phrase.sound, "saved phrase carries no sound; the sound checks prove nothing");
+  SOUND_KEYS.forEach(function (k) {
+    assert(Math.abs(after.phrase.sound[k] - before.phrase.sound[k]) <= 0.001,
+      "sound." + k + " lost in restore: " + before.phrase.sound[k] + " vs " + after.phrase.sound[k]);
+    assert(Math.abs(after.sound[k] - before.sound[k]) <= 0.001,
+      "restored phrase plays a different " + k + ": " + before.sound[k] + " vs " + after.sound[k]);
   });
   ["onsets", "accents", "slides"].forEach(function (k) {
     assert(JSON.stringify(after.phrase[k]) === JSON.stringify(before.phrase[k]),
@@ -1070,6 +1082,8 @@ test("freeze rhythm, pitch and timbre hold their own layer only", function () {
   var td = lastDump(t);
   assert(t1.mode === tp0.mode, "frozen timbre changed filter mode: " + tp0.mode + " to " + t1.mode);
   assert(seq(t1, "timbres") === seq(tp0, "timbres"), "frozen timbre layer changed");
+  assert(JSON.stringify(t1.sound) === JSON.stringify(tp0.sound),
+    "frozen timbre changed the phrase sound (§2.8)");
   assert(td.slow.cut === t0.slow.cut && td.med.drv === t0.med.drv && td.fast.tim === t0.fast.tim,
     "frozen timbre did not pause the chaos walks");
   assert(seq(t1, "onsets") !== seq(tp0, "onsets") || seq(t1, "pitches") !== seq(tp0, "pitches"),
@@ -1119,6 +1133,261 @@ test("Accent and Slide regenerate one layer without touching the rest", function
   }
   assert(changedAcc, "Accent never redrew the accent layer");
   assert(changedSld, "Slide never redrew the slide layer");
+});
+
+// ---------------------------------------------------------------- parametric sound design (§2.8)
+
+function near(a, b, eps) { return Math.abs(a - b) <= (eps || 1e-9); }
+
+test("every phrase carries a complete sound through mutation and reseed", function () {
+  var sb = makeSandbox();
+  assert(JSON.stringify(mt.evalIn(sb, "SOUND_KEYS")) === JSON.stringify(SOUND_KEYS),
+    "the harness's sound key order no longer matches the core's");
+  function check(label) {
+    call(sb, "dump");
+    var d = lastDump(sb);
+    assert(d.phrase.sound, label + ": phrase has no sound");
+    SOUND_KEYS.forEach(function (k) {
+      var v = d.phrase.sound[k], w = d.sound[k];
+      assert(typeof v === "number" && v >= 0 && v <= 1, label + ": sound." + k + " = " + v);
+      assert(typeof w === "number" && w >= 0 && w <= 1, label + ": plays " + k + " = " + w);
+    });
+  }
+  check("initial phrase");
+  call(sb, "novelty", 0.9);
+  for (var i = 1; i <= 6; i++) { call(sb, "Mutate"); check("mutation " + i); }
+  for (var j = 1; j <= 4; j++) {
+    sb.__state.advance(1000 + j * 37); // the reseed is time-derived
+    call(sb, "Reseed");
+    check("reseed " + j);
+  }
+});
+
+test("Design sets how far the phrase's sound moves the dials", function () {
+  var sb = makeSandbox();
+  var SOUND = mt.evalIn(sb, "SOUND"), P = mt.evalIn(sb, "P");
+  // the reference is the dial defaults, so Design 1 at the defaults is the phrase's own sound
+  SOUND_KEYS.forEach(function (k) {
+    assert(SOUND[k][0] === P[k], "the " + k + " reference " + SOUND[k][0] + " is not its dial default " + P[k]);
+  });
+  call(sb, "dump");
+  var s = lastDump(sb).phrase.sound;
+
+  call(sb, "design", 1);
+  assert(near(lastParam(sb, "wave"), s.wave), "Design 1 wave " + lastParam(sb, "wave") + " vs phrase " + s.wave);
+  assert(near(lastParam(sb, "pw"), 0.06 + s.pw * 0.88), "Design 1 does not play the phrase's pulse width");
+  assert(near(lastParam(sb, "fold"), s.fold), "Design 1 does not play the phrase's fold");
+  assert(near(lastParam(sb, "wobcut"), s.wobdepth * 2200, 1e-6), "Design 1 does not play the phrase's wobble");
+  assert(near(lastParam(sb, "subdrv"), 0.6 + s.subsat * 2.6), "Design 1 does not play the phrase's sub drive");
+  call(sb, "dump");
+  var at1 = lastDump(sb).sound;
+  SOUND_KEYS.forEach(function (k) {
+    assert(near(at1[k], s[k]), "Design 1 reports " + k + " " + at1[k] + ", phrase has " + s[k]);
+  });
+
+  // Design 0 plays whatever the dials say, exactly
+  var dials = { wave: 0.8, pw: 0.2, fold: 0.6, wobrate: 0.7, wobdepth: 0.4, subsat: 0.9 };
+  SOUND_KEYS.forEach(function (k) { call(sb, k, dials[k]); });
+  call(sb, "design", 0);
+  assert(near(lastParam(sb, "wave"), 0.8), "Design 0 wave is " + lastParam(sb, "wave"));
+  assert(near(lastParam(sb, "pw"), 0.06 + 0.2 * 0.88), "Design 0 pw is " + lastParam(sb, "pw"));
+  assert(near(lastParam(sb, "fold"), 0.6), "Design 0 fold is " + lastParam(sb, "fold"));
+  assert(near(lastParam(sb, "wobrate"), 0.06 * Math.pow(2, 0.7 * 7.5)), "Design 0 wobble rate moved");
+  assert(near(lastParam(sb, "wobcut"), 880, 1e-6), "Design 0 wobble cutoff depth moved");
+  assert(near(lastParam(sb, "wobpitch"), 0.24), "Design 0 wobble pitch depth moved");
+  assert(near(lastParam(sb, "subdrv"), 0.6 + 0.9 * 2.6), "Design 0 sub drive moved");
+  assert(near(lastParam(sb, "subgain"), 1 / (1 + 0.9 * 0.55)), "Design 0 sub makeup moved");
+
+  // in between, the phrase offsets each dial by Design × its distance from the reference
+  call(sb, "design", 0.5);
+  call(sb, "dump");
+  var half = lastDump(sb).sound;
+  SOUND_KEYS.forEach(function (k) {
+    var want = Math.min(1, Math.max(0, dials[k] + 0.5 * (s[k] - SOUND[k][0])));
+    assert(near(half[k], want), "Design 0.5 " + k + " is " + half[k] + ", expected " + want);
+  });
+});
+
+test("each groove's phrases sit where its sound table puts them", function () {
+  var N = 24;
+  function meanSound(g) {
+    var sb = makeSandbox(), mean = {};
+    call(sb, "groove", g);
+    SOUND_KEYS.forEach(function (k) { mean[k] = 0; });
+    for (var i = 0; i < N; i++) {
+      sb.__state.advance(1000 + i * 97);
+      call(sb, "Reseed");
+      call(sb, "dump");
+      var s = lastDump(sb).phrase.sound;
+      SOUND_KEYS.forEach(function (k) { mean[k] += s[k] / N; });
+    }
+    return mean;
+  }
+  var restrained = meanSound(0), driving = meanSound(3), broken = meanSound(5), hypnotic = meanSound(6);
+  assert(broken.wave > restrained.wave + 0.2,
+    "broken is not buzzier than restrained: wave " + broken.wave.toFixed(3) + " vs " + restrained.wave.toFixed(3));
+  assert(broken.fold > restrained.fold + 0.1,
+    "broken does not fold harder than restrained: " + broken.fold.toFixed(3) + " vs " + restrained.fold.toFixed(3));
+  assert(driving.subsat > restrained.subsat + 0.1,
+    "driving's sub is not hotter than restrained's: " + driving.subsat.toFixed(3) + " vs " + restrained.subsat.toFixed(3));
+  assert(hypnotic.wobdepth > restrained.wobdepth,
+    "hypnotic does not wobble more than restrained: " + hypnotic.wobdepth.toFixed(3) + " vs " + restrained.wobdepth.toFixed(3));
+});
+
+test("phrase sound drifts on the novelty budget and never leaves its groove's range", function () {
+  // how often one mutation moves the sound, sampled straight from a single parent
+  // (a lineage mutates too rarely at low Novelty to show it)
+  function driftRate(novelty) {
+    var sb = makeSandbox(), parent = JSON.stringify(mt.evalIn(sb, "phrase.sound")), moved = 0;
+    for (var i = 0; i < 60; i++) {
+      if (JSON.stringify(mt.evalIn(sb, "mutatePhrase(phrase, " + novelty + ").sound")) !== parent) moved++;
+    }
+    return moved / 60;
+  }
+  var r0 = driftRate(0), r3 = driftRate(0.3), r1 = driftRate(1);
+  assert(r0 === 0, "the sound drifts with Novelty at 0: " + r0.toFixed(2) + " of mutations");
+  assert(r3 > 0 && r1 > r3 && r1 >= 0.6, "sound drift does not follow the timbre budget: " +
+    r3.toFixed(2) + " at Novelty 0.3, " + r1.toFixed(2) + " at 1");
+
+  // a long lineage at full Novelty wanders around its groove's sound, never out of it
+  var sb = makeSandbox();                     // default groove, so the root was drawn from it
+  var table = JSON.parse(JSON.stringify(mt.evalIn(sb, "grooveNow().sound")));
+  call(sb, "novelty", 1);
+  var seen = {}, distinct = 0;
+  for (var cycle = 0; cycle < 48; cycle++) {
+    tickSteps(sb, 32);
+    call(sb, "dump");
+    var s = lastDump(sb).phrase.sound;
+    SOUND_KEYS.forEach(function (k) {
+      var lo = Math.max(0, table[k][0] - table[k][1]), hi = Math.min(1, table[k][0] + table[k][1]);
+      assert(s[k] >= lo - 0.001 && s[k] <= hi + 0.001, "sound." + k + " " + s[k] +
+        " wandered out of the groove's range [" + lo.toFixed(3) + ", " + hi.toFixed(3) + "]");
+    });
+    var key = JSON.stringify(s);
+    if (!seen[key]) { seen[key] = true; distinct++; }
+  }
+  assert(distinct >= 4, "the phrase sound barely drifts at full Novelty: " + distinct + " sounds in 48 cycles");
+});
+
+test("the sound draws on its own streams, so a seed still writes the same bassline", function () {
+  // if a sound draw shared the mutation's random stream, every pattern draw after
+  // it would shift. So make each sound draw burn extra randomness from whatever
+  // stream it is handed: the lineage's sounds change, its notes must not.
+  var BURN = "(function () { var draw = soundDraw; soundDraw = function (rng, groove, key) {" +
+             " rng(); rng(); rng(); return draw(rng, groove, key); }; })()";
+  function lineage(burn) {
+    var sb = makeSandbox(), out = [];
+    if (burn) mt.evalIn(sb, BURN);
+    // every depth, then again with rhythm frozen: a frozen high mutation re-rolls
+    // its step metadata from the mutation's stream after the sound is decided
+    [0, 1].forEach(function (frozen) {
+      call(sb, "frzr", frozen);
+      [0.1, 0.4, 1, 0.1, 0.4, 1, 0.2, 0.5, 0.9, 0.15, 0.45, 1].forEach(function (novelty) {
+        out.push(JSON.parse(JSON.stringify(
+          mt.evalIn(sb, "adoptPhrase(mutatePhrase(phrase, " + novelty + ")), phrase"))));
+      });
+    });
+    return out;
+  }
+  var plain = lineage(false), burnt = lineage(true), soundsMoved = 0;
+  plain.forEach(function (p, i) {
+    var q = burnt[i];
+    if (JSON.stringify(p.sound) !== JSON.stringify(q.sound)) soundsMoved++;
+    delete p.sound; delete q.sound;
+    assert(JSON.stringify(p) === JSON.stringify(q),
+      "mutation " + (i + 1) + ": extra randomness spent on the sound moved the pattern");
+  });
+  // otherwise the burn never ran and the check above proves nothing
+  assert(soundsMoved > 0, "no mutation drew a sound, so the stream check was vacuous");
+});
+
+test("Sound redraws the phrase's sound and filter mode without touching the notes", function () {
+  var sb = makeSandbox();
+  call(sb, "dump");
+  var before = lastDump(sb).phrase;
+  var modes = Object.keys(mt.evalIn(sb, "grooveNow().modes"));
+  var layers = ["onsets", "pitches", "accents", "slides", "vels", "gates", "timbres"];
+  var soundChanged = false, modeChanged = false;
+  for (var i = 0; i < 12; i++) {
+    call(sb, "Sound");
+    call(sb, "dump");
+    var d = lastDump(sb), p = d.phrase;
+    assert(p.id === before.id && p.generation === before.generation,
+      "Sound replaced the phrase instead of redrawing its sound");
+    layers.forEach(function (k) {
+      assert(JSON.stringify(p[k]) === JSON.stringify(before[k]), "Sound moved the " + k + " layer");
+    });
+    assert(modes.indexOf(p.mode) >= 0, "Sound picked " + p.mode + ", outside the groove's affinity " + modes);
+    // the synth hears the new sound at once, not at the next bar line
+    assert(near(lastParam(sb, "wave"), d.sound.wave) && near(lastParam(sb, "fold"), d.sound.fold),
+      "Sound did not re-send the synth");
+    if (JSON.stringify(p.sound) !== JSON.stringify(before.sound)) soundChanged = true;
+    if (p.mode !== before.mode) modeChanged = true;
+  }
+  assert(soundChanged, "Sound never redrew the phrase sound");
+  assert(modeChanged, "Sound never redrew the filter mode");
+
+  // and the redraw is what the set saves
+  call(sb, "dump");
+  var now = lastDump(sb).phrase, fresh = makeSandbox();
+  callArgs(fresh, "Restore", lastState(sb));
+  call(fresh, "dump");
+  assert(JSON.stringify(lastDump(fresh).phrase.sound) === JSON.stringify(now.sound),
+    "the redrawn sound was not saved");
+});
+
+test("Mutate, Return and Reseed send the new phrase's sound at once", function () {
+  var sb = makeSandbox();
+  call(sb, "novelty", 1);
+  ["Mutate", "Mutate", "Return", "Reseed"].forEach(function (b) {
+    sb.__state.advance(1500); // outside Return's double-press window; a distinct reseed
+    call(sb, b);
+    call(sb, "dump");
+    var S = lastDump(sb).sound;
+    assert(near(lastParam(sb, "wave"), S.wave) && near(lastParam(sb, "pw"), 0.06 + S.pw * 0.88) &&
+      near(lastParam(sb, "fold"), S.fold) && near(lastParam(sb, "subdrv"), 0.6 + S.subsat * 2.6),
+      b + " left the synth playing the previous phrase's sound");
+  });
+});
+
+test("a set saved before §2.8 restores without a sound and plays its dials", function () {
+  var a = makeSandbox();
+  call(a, "novelty", 0.8);
+  for (var i = 0; i < 3; i++) call(a, "Mutate");
+  call(a, "dump");
+  var before = lastDump(a).phrase;
+  var saved = lastState(a);
+  var legacy = saved.slice(0, 20 + saved[19] * 8 + 2); // mode and form, no sound
+
+  var b = makeSandbox();
+  call(b, "wave", 0.8);   // Live restores the dials before [pattr] speaks
+  call(b, "fold", 0.25);
+  callArgs(b, "Restore", legacy);
+  call(b, "dump");
+  var d = lastDump(b);
+  assert(d.phrase.id === before.id, "the legacy list did not restore");
+  assert(d.phrase.mode === before.mode, "mode lost from a legacy list");
+  assert(d.phrase.sound === null, "a legacy phrase grew a sound it was never saved with");
+  SOUND_KEYS.forEach(function (k) {
+    assert(d.sound[k] === d.params[k], "legacy phrase plays " + k + " " + d.sound[k] + ", not the dial's " + d.params[k]);
+  });
+  assert(lastParam(b, "wave") === 0.8 && lastParam(b, "fold") === 0.25, "legacy restore did not play the dials");
+
+  // saved again, it still has no sound, and the list says so
+  call(b, "pushall");
+  var resaved = lastState(b);
+  assert(resaved.length === legacy.length + SOUND_KEYS.length, "resaved list has the wrong length");
+  assert(resaved.slice(-SOUND_KEYS.length).every(function (v) { return v === -1; }),
+    "a phrase with no sound did not save the no-sound marker");
+  var c = makeSandbox();
+  callArgs(c, "Restore", resaved);
+  call(c, "dump");
+  assert(lastDump(c).phrase.sound === null, "the no-sound marker restored as a sound");
+
+  // and its first mutation gives the lineage a sound of its own
+  call(b, "Mutate");
+  call(b, "dump");
+  assert(lastDump(b).phrase.sound, "a legacy lineage never gained a sound");
 });
 
 test("wet envelope and diffusion parameters stay in range", function () {
@@ -1270,13 +1539,14 @@ test("every selector the core emits is routed in the built device", function () 
   var sb = makeSandbox();
   call(sb, "pushall");
   ["novelty", "density", "interlock", "chunk", "squelch", "drive", "cutoff",
-   "decay", "sub", "subsat", "wet", "width"].forEach(function (m) { call(sb, m, 0.7); });
+   "decay", "sub", "subsat", "wet", "width", "wave", "pw", "fold", "wobrate", "wobdepth",
+   "design"].forEach(function (m) { call(sb, m, 0.7); });
   ["fmode", "suboct", "groove", "root", "plen", "lock", "frzr", "frzp", "frzt"]
     .forEach(function (m) { call(sb, m, 1); });
   call(sb, "lock", 0);
   ["frzr", "frzp", "frzt"].forEach(function (m) { call(sb, m, 0); });
   tickSteps(sb, 128);
-  ["Mutate", "Return", "Reseed", "Rhythm", "Pitch", "Accent", "Slide"]
+  ["Mutate", "Return", "Reseed", "Rhythm", "Pitch", "Accent", "Slide", "Sound"]
     .forEach(function (b) { call(sb, b); });
   tickSteps(sb, 64);
   call(sb, "dump");

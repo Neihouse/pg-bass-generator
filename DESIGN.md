@@ -68,6 +68,7 @@ Phrase {
   pitch:   contour type + scale degrees
   accents: accent mask
   slides:  slide mask
+  sound:   wave, pw, fold, wobrate, wobdepth, subsat   // § 2.8
 }
 ```
 
@@ -199,7 +200,7 @@ Groove state also weights contour selection (§ 1.7) and filter mode affinity (�
 
 Mono voice, last-note priority, 303-style legato: a slide step glides pitch **without retriggering** envelopes.
 
-Voice path: `saw/pulse mix + sub → pre-filter drive → nonlinear resonant LPF → filter/amp envelopes → post saturation → out`.
+Voice path: `saw↔pulse crossfade → wavefolder + sub → pre-filter drive → nonlinear resonant LPF → filter/amp envelopes → post saturation → out`.
 
 ## 2.1 Filter behavior as a state machine
 
@@ -268,6 +269,71 @@ The sub oscillator has its own rules:
 | filtering | low-passed |
 
 Controls: sub octave (−1 / −2) · sub mix · sub saturation · sub ducking on resonant peaks.
+
+## 2.6 Waveform shaping
+
+The oscillator is shaped before it reaches the filter:
+
+| Control | Behavior |
+|---|---|
+| **wave** | crossfades saw ↔ pulse, so the blend is one timbral sweep, not a louder sum |
+| **pwm** | pulse width, kept inside 6–94% where a pulse cycle would collapse toward silence |
+| **fold** | sine wavefolder, crossfaded in; adds harmonics that move independently of the filter |
+
+All three glide over 40 ms, so a phrase that brings a new sound (§ 2.8) never steps mid-note.
+
+## 2.7 Wobble LFO
+
+One LFO swings the filter cutoff and the pitch of both oscillators together, so the wobble reads as one gesture instead of two modulations drifting apart.
+
+| Control | Maps to |
+|---|---|
+| **wobble rate** | 0.06 × 2^(7.5 × rate) Hz — about 0.06 to 11 Hz |
+| **wobble depth** | cutoff ± 2200 Hz and pitch ± 0.6 st at full depth; the cutoff swing is added after the filter envelope |
+
+## 2.8 Parametric sound design
+
+A phrase carries its own **sound**, not just its notes: six parameters that set where the oscillator shape, wavefolder, wobble and sub saturation sit.
+
+```
+Sound { wave, pw, fold, wobrate, wobdepth, subsat }   // each 0–1
+```
+
+**Groove tables.** Each groove state (§ 1.10) gives every sound parameter a `[centre, spread]`. A new phrase draws each one triangularly around the centre, so a groove's phrases cluster where it sits and reach the edges of its spread only now and then.
+
+| Groove | Oscillator | Fold | Wobble | Sub saturation | Spread |
+|---|---|---|---|---|---|
+| **restrained** | dark saw | trace | slow, faint | low | narrow |
+| **rolling** | saw | light | gentle | medium | medium |
+| **syncopated** | even blend, narrow pulse | medium | medium | medium | medium |
+| **driving** | pulse-leaning | medium | quick, faint | **high** | medium |
+| **acidic** | saw | light | **fastest** | medium | wide |
+| **broken** | pulse, narrowest | **heaviest** | deepest, erratic rate | low | **widest** |
+| **hypnotic** | saw-leaning | trace | slowest, always present | low | **tight** — phrases sound alike |
+
+**Design macro.** Like a filter mode (§ 2.1), the phrase's sound is an offset around the dials, not a takeover:
+
+```
+played = clamp(dial + design × (phrase value − reference), 0, 1)
+```
+
+Each reference is that dial's default, so **design 0** plays the dials exactly, and **design 1 with the dials at default** plays each phrase's own sound. Anywhere between, the dial sets the centre and the phrase moves around it. Default design is 0.5.
+
+**Evolution.** A mutation (§ 1.1) moves the sound only when the timbre allocation of the novelty budget (§ 4.3) spends. Otherwise the lineage keeps its sound, even through a high mutation that regenerates the notes. When the budget spends, the mutation pulls a few randomly picked parameters part of the way toward a fresh draw from the current groove. Pulling toward a draw, rather than stepping by a random amount, is mean-reverting: a lineage wanders around its groove's sound instead of random-walking to the edges, and drifts across after a groove change.
+
+| Mutation depth | Parameters pulled | Pull toward the draw |
+|---|---|---|
+| **low** | 1 | 30% |
+| **medium** | up to 2 | 60% |
+| **high** | up to 3 | 85% |
+
+**Holding and redrawing.**
+
+- **freeze timbre** (§ 5.3) holds the sound along with the filter mode.
+- **regenerate sound** draws a new sound and filter mode from the current groove and leaves every note, accent and slide alone.
+- Mutate, return and reseed re-send the synth at once, so a phrase's sound arrives with its notes instead of at the next bar.
+
+**Persistence.** The sound is saved with the phrase in the Live Set. A set saved before phrases had a sound restores without one and plays its dials exactly as before. Its lineage picks up a sound at the next mutation, unless timbre is frozen, or at a regenerate sound. The sound draws from its own random stream, so a seed still writes the same bassline it did before.
 
 ---
 
@@ -394,9 +460,9 @@ The synth responds to metadata directly — the pattern shapes the sound.
 
 ## 5.2 Phrase-level timbre evolution
 
-Each new phrase may slightly shift: cutoff center · resonance bias · drive amount · envelope decay · wetness · modulation depth.
+Each new phrase may slightly shift: cutoff center · resonance bias · drive amount · envelope decay · wetness · modulation depth · its sound (§ 2.8).
 
-Shifts are bounded by the chaos clamps (§ 4.2), so timbral evolution is tied to musical structure and never escapes the identity.
+Shifts are bounded by the chaos clamps (§ 4.2), and the sound by its groove's spread, so timbral evolution is tied to musical structure and never escapes the identity.
 
 ## 5.3 Reset and anchor behavior
 
@@ -410,7 +476,7 @@ Deliberate re-grounding — essential for live use:
 | **freeze rhythm** | rhythm layer immutable, others evolve |
 | **freeze pitch** | pitch layer immutable |
 | **freeze timbre** | timbre drift paused |
-| **regenerate layer** | regenerate exactly one layer (rhythm / pitch / accent / slide) |
+| **regenerate layer** | regenerate exactly one layer (rhythm / pitch / accent / slide / sound) |
 
 ---
 
@@ -423,7 +489,8 @@ Deliberate re-grounding — essential for live use:
 | **squelch** | filter env depth, resonance, accent→filter coupling, resonance compensation |
 | **chunk** | gate length (short, decisive), amp env punch, drive, transient weight, tight low end |
 | **wet** | wet send ceiling, envelope-shaped send depth, band wetness |
-| **groove state** | § 1.10 — sets many sequencer params at once |
+| **groove state** | § 1.10 — sets many sequencer params at once, and where phrases' sounds sit (§ 2.8) |
+| **design** | § 2.8 — how far each phrase's own sound moves the sound dials |
 | **seed / mutate / return** | § 5.3 transport for the phrase lineage |
 
 ---

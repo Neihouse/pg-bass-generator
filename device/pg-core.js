@@ -59,6 +59,18 @@ var MODE_NAMES = ["round", "wet", "squelch", "bite", "hollow", "rubber", "acid"]
 // §1.9 default directional slide weights, overridden per groove below
 var SDIR = { up: 1, dn: 1, rtn: 1, oct: 1 };
 
+// §2.8 parametric sound design. A phrase carries its own sound — where the
+// oscillator shape, wavefolder, wobble and sub saturation sit — drawn from its
+// groove's [centre, spread] table. Like a mode it is an offset, not a takeover:
+// the phrase pushes each dial by Design × (phrase value − reference), so the
+// dials still do exactly what they say. The reference centres below are the
+// dials' own initial values, so at default dial positions with Design fully up
+// the device plays the phrase's sound exactly. Ordered: the saved state
+// serializes the sound in this order.
+var SOUND_KEYS = ["wave", "pw", "fold", "wobrate", "wobdepth", "subsat"];
+var SOUND = { wave: [0.30, 0.15], pw: [0.50, 0.15], fold: [0.00, 0.05],
+              wobrate: [0.35, 0.15], wobdepth: [0.00, 0.04], subsat: [0.35, 0.15] };
+
 // §1.10 groove states — each moves many parameters together.
 // push  = how far the groove leans forward (fraction of a step, applied as rush
 //         on accents and drag on ghosts); pick = anticipation probability per
@@ -67,11 +79,15 @@ var SDIR = { up: 1, dn: 1, rtn: 1, oct: 1 };
 // motif = probability that beats 3-4 restate beats 1-2 within the bar.
 // modes = §2.1 filter-mode affinity (§1.10: groove state weights mode selection).
 // sdir  = §1.9 which direction this groove likes to glide.
+// sound = §2.8 where this groove's phrases sit on each sound parameter.
 var GROOVES = [
   { name: "restrained", dens: 0.35, off: 0.20, gate: 0.50, acc: 0.15, sld: 0.08, mut: 0.4, swing: 0.02,
     push: 0.025, pick: 0.12, frz: 0.20, fam: "deep", motif: 0.55,
     modes: { round: 4, rubber: 2, wet: 1 },
     sdir: { up: 1.0, dn: 0.8, rtn: 1.4, oct: 0.4 },
+    // dark saw, barely folded, slow and shallow wobble
+    sound: { wave: [0.20, 0.12], pw: [0.50, 0.10], fold: [0.02, 0.03],
+             wobrate: [0.30, 0.10], wobdepth: [0.02, 0.03], subsat: [0.30, 0.12] },
     contours: { repeat: 3, pedal: 3, neighbor: 2, arch: 1, descending: 1 } },
   // rolling and syncopated share the psy vocabulary and are separated by how
   // they sit against the kick: rolling rides with it, syncopated answers it
@@ -79,26 +95,40 @@ var GROOVES = [
     push: 0.050, pick: 0.35, frz: 0.18, fam: "psy", motif: 0.70, kick: 0.63,
     modes: { wet: 3, rubber: 3, round: 2, squelch: 1 },
     sdir: { up: 1.3, dn: 0.9, rtn: 1.2, oct: 0.6 },
+    sound: { wave: [0.30, 0.18], pw: [0.45, 0.15], fold: [0.06, 0.06],
+             wobrate: [0.42, 0.15], wobdepth: [0.06, 0.06], subsat: [0.38, 0.15] },
     contours: { repeat: 3, pedal: 2, leaprtn: 2, arch: 1, neighbor: 1 } },
   { name: "syncopated", dens: 0.55, off: 0.92, gate: 0.55, acc: 0.45, sld: 0.25, mut: 0.9, swing: 0.10,
     push: 0.045, pick: 0.45, frz: 0.10, fam: "psy", motif: 0.55, kick: 0.37,
     modes: { squelch: 3, bite: 2, wet: 2, hollow: 1 },
     sdir: { up: 1.1, dn: 1.2, rtn: 1.0, oct: 0.8 },
+    // more pulse, a narrower one, and enough fold to bite
+    sound: { wave: [0.48, 0.22], pw: [0.36, 0.16], fold: [0.14, 0.10],
+             wobrate: [0.50, 0.18], wobdepth: [0.05, 0.05], subsat: [0.42, 0.16] },
     contours: { neighbor: 2, leaprtn: 2, arch: 2, repeat: 1, ascending: 1 } },
   { name: "driving",    dens: 0.80, off: 0.25, gate: 0.60, acc: 0.50, sld: 0.12, mut: 0.5, swing: 0.03,
     push: 0.080, pick: 0.25, frz: 0.22, fam: "deep", motif: 0.75,
     modes: { bite: 3, squelch: 2, round: 2 },
     sdir: { up: 1.4, dn: 0.6, rtn: 0.9, oct: 0.5 },
+    // pulse-forward and saturated, with the wobble kept shallow so it stays tight
+    sound: { wave: [0.55, 0.20], pw: [0.50, 0.16], fold: [0.18, 0.12],
+             wobrate: [0.55, 0.18], wobdepth: [0.03, 0.03], subsat: [0.58, 0.16] },
     contours: { repeat: 3, pedal: 2, ascending: 1, descending: 1 } },
   { name: "acidic",     dens: 0.65, off: 0.55, gate: 0.50, acc: 0.60, sld: 0.50, mut: 0.9, swing: 0.05,
     push: 0.060, pick: 0.35, frz: 0.08, fam: "acid", motif: 0.80,
     modes: { acid: 5, squelch: 3, bite: 1 },
     sdir: { up: 1.5, dn: 1.3, rtn: 0.7, oct: 1.4 },
+    // saw or square, the two classic acid shapes, so the wave spread is wide
+    sound: { wave: [0.25, 0.25], pw: [0.50, 0.20], fold: [0.10, 0.10],
+             wobrate: [0.60, 0.20], wobdepth: [0.08, 0.07], subsat: [0.42, 0.16] },
     contours: { leaprtn: 3, neighbor: 2, ascending: 2, arch: 1, repeat: 1 } },
   { name: "broken",     dens: 0.50, off: 0.60, gate: 0.55, acc: 0.55, sld: 0.25, mut: 1.3, swing: 0.09,
     push: 0.035, pick: 0.50, frz: 0.06, fam: "broken", motif: 0.30,
     modes: { hollow: 3, bite: 2, rubber: 2, squelch: 1 },
     sdir: { up: 0.9, dn: 1.4, rtn: 0.8, oct: 1.0 },
+    // the widest tables: narrow pulses, the most fold, wobble anywhere
+    sound: { wave: [0.62, 0.25], pw: [0.30, 0.18], fold: [0.28, 0.18],
+             wobrate: [0.40, 0.28], wobdepth: [0.10, 0.08], subsat: [0.32, 0.18] },
     contours: { arch: 2, leaprtn: 2, descending: 2, neighbor: 1, ascending: 1 } },
   // hypnotic shares rolling's psy vocabulary; what separates them is that it says
   // less and changes less — sparser cells, a near-certain two-beat motif, and the
@@ -107,6 +137,9 @@ var GROOVES = [
     push: 0.018, pick: 0.15, frz: 0.35, fam: "psy", motif: 0.85,
     modes: { round: 3, rubber: 3, wet: 2 },
     sdir: { up: 1.0, dn: 0.9, rtn: 1.6, oct: 0.3 },
+    // the tightest tables: a slow, slightly deeper wobble is the hypnosis
+    sound: { wave: [0.35, 0.08], pw: [0.55, 0.08], fold: [0.04, 0.03],
+             wobrate: [0.25, 0.08], wobdepth: [0.09, 0.04], subsat: [0.35, 0.08] },
     contours: { repeat: 4, pedal: 3, neighbor: 1 } }
 ];
 
@@ -120,6 +153,7 @@ var P = {
   subsat: 0.35, width: 0.6, // §2.5 sub saturation, §3.4 stereo width
   wave: 0.3, pw: 0.5, fold: 0.0,      // §2.6 saw<->pulse blend, pulse width, wavefolder
   wobrate: 0.35, wobdepth: 0.0,       // §2.7 shared filter+pitch wobble LFO
+  design: 0.5,             // §2.8 how far the phrase's own sound moves the dials
   groove: 1, root: 36, bars: 2,
   fmode: 0,                // §2.1 filter mode: 0 = follow the groove, 1..7 = forced
   suboct: 0,               // §2.5 sub octave: 0 = -1, 1 = -2
@@ -219,6 +253,50 @@ function modeIdx(name) {
   return 0;
 }
 
+// §2.8 one sound parameter drawn from the groove's table: triangular around the
+// centre, so a groove's phrases cluster where it sits and reach the edges of its
+// spread only now and then.
+function soundDraw(rng, groove, key) {
+  var t = (groove.sound && groove.sound[key]) || SOUND[key];
+  return round3(clamp(t[0] + (rng() + rng() - 1) * t[1], 0, 1));
+}
+function genSound(rng, groove) {
+  var s = {};
+  for (var i = 0; i < SOUND_KEYS.length; i++) s[SOUND_KEYS[i]] = soundDraw(rng, groove, SOUND_KEYS[i]);
+  return s;
+}
+function copySound(s) {
+  if (!s) return null;
+  var c = {};
+  for (var i = 0; i < SOUND_KEYS.length; i++) c[SOUND_KEYS[i]] = s[SOUND_KEYS[i]];
+  return c;
+}
+// §2.8 / §5.2 a mutation pulls a few sound parameters part way toward a fresh draw
+// from the current groove. Pulling toward a draw, rather than stepping by a random
+// amount, is mean-reverting: a lineage wanders around its groove's sound instead
+// of random-walking out to the edges, and drifts over after a groove change.
+function driftSound(rng, s, groove, amount, nKeys) {
+  var c = copySound(s);
+  for (var i = 0; i < nKeys; i++) {
+    var key = SOUND_KEYS[Math.floor(rng() * SOUND_KEYS.length)];
+    c[key] = round3(clamp(lerp(c[key], soundDraw(rng, groove, key), amount), 0, 1));
+  }
+  return c;
+}
+// §2.8 the sound actually playing: each dial offset by Design × how far the
+// phrase's own sound sits from the reference. A phrase with no sound (one restored
+// from a set saved before §2.8) plays the dials exactly.
+function soundNow() {
+  var s = phrase && phrase.sound, out = {};
+  for (var i = 0; i < SOUND_KEYS.length; i++) {
+    var key = SOUND_KEYS[i];
+    out[key] = (s && typeof s[key] === "number")
+      ? clamp(P[key] + P.design * (s[key] - SOUND[key][0]), 0, 1)
+      : P[key];
+  }
+  return out;
+}
+
 function clonePhrase(p) {
   return {
     id: p.id, parentId: p.parentId, generation: p.generation,
@@ -227,7 +305,8 @@ function clonePhrase(p) {
     onsets: p.onsets.slice(), gates: p.gates.slice(), pitches: p.pitches.slice(),
     accents: p.accents.slice(), slides: p.slides.slice(), probs: p.probs.slice(),
     timbres: p.timbres.slice(), wets: p.wets.slice(), micros: p.micros.slice(),
-    vels: p.vels ? p.vels.slice() : []
+    vels: p.vels ? p.vels.slice() : [],
+    sound: copySound(p.sound)
   };
 }
 
@@ -705,6 +784,10 @@ function generatePhrase(seed, parent) {
   p.slides = genSlides(rng, p, groove, dens);
   addPickups(rng, p, groove);
   genStepMeta(rng, p, groove);
+  // §2.8 drawn last, so every pattern draw above is where it was before phrases
+  // had a sound, and on its own stream, so anything drawn after it one day stays
+  // put too: the same seed still writes the same bassline
+  p.sound = genSound(makeRng(seed * 48271 + 11), groove);
   return p;
 }
 
@@ -738,6 +821,7 @@ function applyFreezes(child, parent) {
   }
   if (P.frzt) {                       // timbre drift paused
     child.mode = parent.mode;
+    child.sound = copySound(parent.sound); // §2.8
     child.timbres = parent.timbres.slice();
     child.wets = parent.wets.slice();
   }
@@ -758,6 +842,14 @@ function mutatePhrase(parent, novelty) {
     // high: regenerate most layers; retain root / scale / phrase length
     var fresh = generatePhrase(Math.floor(rng() * 2147483646), parent);
     fresh.letter = parent.letter;
+    // §2.8 a fresh pattern keeps the lineage's sound unless the timbre budget
+    // spends, and then moves it hard. A parent with no sound keeps the fresh draw.
+    var srng2 = makeRng(fresh.id * 48271 + parent.seed + 17);
+    if (!P.frzt && parent.sound) {
+      fresh.sound = srng2() < alloc.timbre
+        ? driftSound(srng2, parent.sound, groove, 0.85, 3)
+        : copySound(parent.sound);
+    }
     if (anyFreeze()) {
       applyFreezes(fresh, parent);
       genStepMeta(rng, fresh, groove);
@@ -804,6 +896,17 @@ function mutatePhrase(parent, novelty) {
   // §5.2 phrase-level timbre evolution: a mutation may move the filter mode, but
   // only inside the groove's affinity and only when the timbre layer is free.
   if (!P.frzt && depth >= 1 && rng() < alloc.timbre) child.mode = pickMode(rng, groove);
+
+  // §2.8 the phrase's sound drifts on the same budget: rarely and slightly at low
+  // depth, further at medium. Its own stream, so the draws around it are unchanged.
+  // A phrase restored from a set saved before §2.8 has no sound until it mutates.
+  if (!P.frzt) {
+    var srng = makeRng(child.id * 48271 + parent.seed + 17);
+    if (!child.sound) child.sound = genSound(srng, groove);
+    else if (srng() < alloc.timbre) {
+      child.sound = driftSound(srng, child.sound, groove, depth ? 0.6 : 0.3, depth ? 2 : 1);
+    }
+  }
 
   if (anyFreeze()) applyFreezes(child, parent);
 
@@ -932,6 +1035,7 @@ function pushSynth() {
   // envelope sweeps ~1.2 kHz above it — the squelch rides ON TOP of a solid
   // fundamental instead of parking every note in the midrange.
   var M = modeOf(); // §2.1 the mode moves the centre the macros move around
+  var S = soundNow(); // §2.8 and the phrase's sound moves the sound dials
   var cutoffHz = 45 * Math.pow(2, P.cutoff * 6.2 + M.cut) * (1 + slow.cut);
   var reso = clamp(0.06 + P.squelch * 0.68 + M.res + slow.res, 0, 0.92);
   var envd = (180 + Math.pow(P.squelch, 1.4) * 2800) * M.env;
@@ -962,8 +1066,8 @@ function pushSynth() {
   // and the sub ducks under resonant peaks so a blooming filter and the sub
   // don't stack up into the same few dB of headroom.
   outlet(0, "sub", 0.45 + P.sub * 0.55);
-  outlet(0, "subdrv", 0.6 + P.subsat * 2.6);
-  outlet(0, "subgain", 1 / (1 + P.subsat * 0.55));
+  outlet(0, "subdrv", 0.6 + S.subsat * 2.6);
+  outlet(0, "subgain", 1 / (1 + S.subsat * 0.55));
   outlet(0, "subduck", clamp((reso - 0.45) * 0.9, 0, 0.45));
   outlet(0, "asym", asymFor(96, false)); // §2.4 idle value; each note re-sends its own
   // §3.4 stereo: the low end is mono, always. Only the wet return spreads, and
@@ -982,15 +1086,16 @@ function pushSynth() {
   outlet(0, "wdec", lerp(240, 900, P.wet));
   outlet(0, "dmod", 0.8 + P.wet * 3.2); // §3.2 tap modulation depth in ms (diffusion)
   // §2.6 waveform shaping: saw<->pulse blend, pulse width (kept off the hard
-  // edges where a rect~ cycle collapses toward silence), wavefolder depth
-  outlet(0, "wave", P.wave);
-  outlet(0, "pw", 0.06 + P.pw * 0.88);
-  outlet(0, "fold", P.fold);
+  // edges where a rect~ cycle collapses toward silence), wavefolder depth. They
+  // glide, because a new phrase can bring a new sound (§2.8) mid-note.
+  outlet(0, "wave", S.wave, 40);
+  outlet(0, "pw", 0.06 + S.pw * 0.88, 40);
+  outlet(0, "fold", S.fold, 40);
   // §2.7 one wobble LFO shared by cutoff and pitch, so the two move together
   // instead of drifting apart into two independent, less legible modulations
-  outlet(0, "wobrate", 0.06 * Math.pow(2, P.wobrate * 7.5), 60);
-  outlet(0, "wobcut", P.wobdepth * 2200, 40);
-  outlet(0, "wobpitch", P.wobdepth * 0.6, 40);
+  outlet(0, "wobrate", 0.06 * Math.pow(2, S.wobrate * 7.5), 60);
+  outlet(0, "wobcut", S.wobdepth * 2200, 40);
+  outlet(0, "wobpitch", S.wobdepth * 0.6, 40);
 }
 
 function pushDelays() {
@@ -1286,6 +1391,7 @@ function pw(v) { P.pw = clamp(v, 0, 1); pushSynth(); }           // §2.6 pulse 
 function fold(v) { P.fold = clamp(v, 0, 1); pushSynth(); }       // §2.6 wavefolder depth
 function wobrate(v) { P.wobrate = clamp(v, 0, 1); pushSynth(); } // §2.7 wobble LFO rate
 function wobdepth(v) { P.wobdepth = clamp(v, 0, 1); pushSynth(); } // §2.7 wobble LFO depth
+function design(v) { P.design = clamp(v, 0, 1); pushSynth(); }   // §2.8 phrase sound amount
 function suboct(i) { P.suboct = Math.floor(i) ? 1 : 0; }         // §2.5 -1 / -2
 
 function fmode(i) { // §2.1 — 0 follows the groove's affinity, 1..7 force a mode
@@ -1334,17 +1440,25 @@ function frzt(v) { P.frzt = v ? 1 : 0; }
 
 // §5.3 — an explicit button press is a request for something different, so it
 // carries its own floor above the medium-mutation threshold rather than
-// inheriting a Novelty dial that may be sitting low for the ambient drift
-function Mutate() { if (phrase) adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.4))); }
+// inheriting a Novelty dial that may be sitting low for the ambient drift.
+// Each press re-sends the synth so the phrase's mode and sound (§2.8) arrive with
+// its notes instead of waiting for the next bar line.
+function Mutate() {
+  if (!phrase) return;
+  adoptPhrase(mutatePhrase(phrase, Math.max(P.novelty, 0.4)));
+  pushSynth();
+}
 function Return() { // §5.3 — one press steps back a generation, two in a row go to the root
   var now = Date.now();
   if (lastReturnMs > 0 && now - lastReturnMs < 700) returnToRoot();
   else returnToParent();
   lastReturnMs = now;
+  pushSynth();
 }
 function Reseed() { // §5.3: new seed, new root phrase, lineage restarts
   letterIdx++;
   adoptPhrase(generatePhrase((Date.now() % 2147483646) + 1, null));
+  pushSynth();
 }
 function Rhythm() { // §5.3 regenerate one layer only: rhythm
   if (!phrase) return;
@@ -1396,6 +1510,16 @@ function Slide() { // §5.3 regenerate one layer only: slide
   updateDisplay();
   pushState();
 }
+function Sound() { // §2.8 regenerate one layer only: the phrase's sound, filter mode included
+  if (!phrase) return;
+  var rng = makeRng(Math.floor(chaosRng() * 2147483646) + 1);
+  var groove = grooveNow();
+  phrase.mode = pickMode(rng, groove);
+  phrase.sound = genSound(rng, groove);
+  pushSynth();
+  updateDisplay();
+  pushState();
+}
 
 // pushall runs on device load, after [pattr] has already had its say — so a set
 // that was saved before the device ever played still ends up with a stored phrase.
@@ -1414,7 +1538,9 @@ var STATE_STRIDE = 8;   // atoms per step
 // Anything added after v0.4 goes in a trailing block instead of the header, so
 // the version doesn't have to move and sets saved by older builds still restore:
 // a short list simply has no tail and those fields fall back to their defaults.
-var STATE_TAIL = 2;     // [ §2.1 filter mode index, §1.3b bar form index ]
+// [ §2.1 filter mode index, §1.3b bar form index, §2.8 sound in SOUND_KEYS order ]
+// A phrase with no sound saves -1 in every sound slot.
+var STATE_TAIL = 2 + SOUND_KEYS.length;
 
 function formIdx(bars, name) {
   var list = FORMS[bars] || FORMS[2];
@@ -1443,6 +1569,7 @@ function pushState() {
   }
   a.push(modeIdx(p.mode || "round"));
   a.push(formIdx(p.bars, p.form));
+  for (var k = 0; k < SOUND_KEYS.length; k++) a.push(p.sound ? round3(p.sound[SOUND_KEYS[k]]) : -1);
   outlet(0, "state", a);
 }
 
@@ -1487,13 +1614,20 @@ function Restore() { // list from [pattr] on device load
   }
 
   var tail = STATE_HEAD + steps * STATE_STRIDE;
-  if (n >= tail + STATE_TAIL) {
+  if (n >= tail + 2) {
     p.mode = MODE_NAMES[a[tail]] || "round";
     var fi = a[tail + 1], list = FORMS[p.bars] || FORMS[2];
     if (fi >= 0 && list[fi]) p.form = list[fi].name;
   } else {
     // saved by a build that predates the tail: fall back rather than fail
     p.mode = "round";
+  }
+  // §2.8 a set saved before phrases had a sound restores without one, and so plays
+  // its dials exactly as it did when it was saved
+  p.sound = null;
+  if (n >= tail + STATE_TAIL && a[tail + 2] >= 0) {
+    p.sound = {};
+    for (var k = 0; k < SOUND_KEYS.length; k++) p.sound[SOUND_KEYS[k]] = clamp(a[tail + 2 + k], 0, 1);
   }
 
   phrase = p;
@@ -1510,6 +1644,7 @@ function dump() { // debug/test hook: full state snapshot on outlet 2
   var snap = {
     params: P, stepMs: stepMs, playStep: playStep,
     mode: modeName(),
+    sound: soundNow(),     // §2.8 what the synth is being sent, after Design
     historyLen: history.length,
     freezeLeft: freezeLeft,
     slow: { cut: slow.cut, res: slow.res, wet: slow.wet },
@@ -1521,7 +1656,8 @@ function dump() { // debug/test hook: full state snapshot on outlet 2
       form: phrase.form, mode: phrase.mode,
       onsets: phrase.onsets, pitches: phrase.pitches, accents: phrase.accents,
       slides: phrase.slides, gates: phrase.gates, vels: phrase.vels,
-      probs: phrase.probs, timbres: phrase.timbres, wets: phrase.wets, micros: phrase.micros
+      probs: phrase.probs, timbres: phrase.timbres, wets: phrase.wets, micros: phrase.micros,
+      sound: phrase.sound
     } : null
   };
   outlet(2, "dump", JSON.stringify(snap));

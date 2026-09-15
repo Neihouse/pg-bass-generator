@@ -6,7 +6,9 @@ A Max for Live instrument for Ableton Live that generates novel, stylistically c
 
 ## Status
 
-**v0.5 built.** The generative core, synth engine, and device patch are implemented and tested (51/51 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
+**v0.5 built.** The generative core, synth engine, and device patch are implemented and tested (59/59 behavioral tests passing). The `.amxd` container format is byte-verified against Ableton Live 12 factory devices. The full design spec lives in [DESIGN.md](DESIGN.md).
+
+Since v0.5 the voice has waveform shaping (saw ↔ pulse, pulse width, wavefolder) and a wobble LFO. On top of them sits **parametric sound design (§2.8)**; see [Sound design](#sound-design) below. Every phrase carries its own sound, drawn from its groove, and that sound evolves with the lineage on the novelty budget. The **Design** dial sets how far the phrase's sound moves the dials, and a **Sound** button redraws it without touching the notes.
 
 v0.5 is the completion pass — everything DESIGN.md specifies is now actually implemented and reachable from the UI:
 
@@ -52,10 +54,16 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 | **Drive** | Pre/post saturation amount. |
 | **Cutoff** | Base filter cutoff (~45 Hz – ~3.3 kHz exponential — voiced so the filter always settles back into bass territory). |
 | **Decay** | Filter envelope decay time (squelch resolves inside a 16th at typical settings). |
+| **Wave** | Oscillator shape: crossfades saw (0) ↔ pulse (1). |
+| **PWM** | Pulse width of the pulse side, kept between 6% and 94%. |
+| **Fold** | Wavefolder depth: harmonics added before the filter, moving independently of it. |
 | **Sub** | Sub-oscillator level (saturated sine, octave-folded under every note; 0.45 floor). |
 | **SubSat** | Sub saturation drive, with automatic makeup gain so turning it up thickens the sub instead of just making it louder. |
 | **Wet** | Frequency-split wet send (delay/feedback network high-passed at 500 Hz, return ducked by the dry amp envelope; low end stays dry/mono). |
 | **Width** | Stereo width of the wet return (mid/side). 0 is a true mono return, not silence. Also sets the mono-below crossover: narrow settings keep more of the low end centred. |
+| **WobRate** | Wobble LFO rate, ~0.06–11 Hz exponential. |
+| **WobDepth** | Wobble depth. One LFO swings the cutoff (±2.2 kHz) and the pitch (±0.6 st) together. |
+| **Design** | How far each phrase's own sound moves Wave, PWM, Fold, WobRate, WobDepth and SubSat. At 0 those dials play exactly as set; at 1, with them at their defaults, the phrase's sound plays. Default 0.5. See [Sound design](#sound-design). |
 | **Groove** | 7 groove states. Each selects a rhythmic family and a kick relationship, plus weights for density/offbeats/gates/accents/slides/swing/contours/filter mode/slide direction. |
 | **Mode** | Filter mode. `auto` lets the groove's affinity weights draw one with each phrase; any other position forces it — see [Filter modes](#filter-modes). |
 | **Root** | Root note (C–B, register C1–C3 by default). |
@@ -67,11 +75,12 @@ If Live rejects the file for any reason, open `device/PG Bass Generator.maxpat` 
 | **Return** | Return to the parent phrase in the lineage. Press twice within 700 ms to jump straight back to the lineage root. |
 | **Reseed** | New seed → brand-new phrase identity. |
 | **Rhythm / Pitch / Accent / Slide** | Regenerate just that layer, keeping the rest of the phrase identity. |
+| **Sound** | Redraw the phrase's sound and filter mode from the groove, keeping every note, accent and slide. |
 | **Capture** | Write the current phrase into the first empty clip slot on this track as MIDI. |
 
 ## Development
 
-- `device/pg-core.js` — the entire generative core (phrase identity, memory/lineage, tonal gravity, contour grammar, rhythmic cell families and bar form, rest grammar, accent hierarchy, directional slide logic, groove states, filter modes, novelty budget, synth parameter mapping). Legacy `js` object, strict ES5.
+- `device/pg-core.js` — the entire generative core (phrase identity, memory/lineage, tonal gravity, contour grammar, rhythmic cell families and bar form, rest grammar, accent hierarchy, directional slide logic, groove states, filter modes, phrase sound design, novelty budget, synth parameter mapping). Legacy `js` object, strict ES5.
 - `scripts/build_device.py` — generates both devices programmatically. One `build(kind)` shares the UI, core, clock and persistence; `kind="instrument"` appends the synth and `plugout~` (`iiii`), `kind="midi"` appends `midiout` instead (`mmmm`). Only the PG-specific parts live here: control layout, parameter lists and the voice graph.
 - `m4lkit/` — the device-independent toolkit the builder sits on: patcher JSON + `.amxd` container writer, presentation-row layout for Live controls, the `[js]`-core plumbing (controls, clock, routing, smoothing, `[pattr]` persistence, MIDI out) and reusable DSP blocks. See `m4lkit/README.md`.
 - `tests/harness.js` — the PG-specific tests. The fake Max environment it runs `pg-core.js` in (Task scheduler, fake clock, seeded `Math.random`, outlet recorder, patch readers, runner) is `m4lkit/maxtest.js`. Two of the tests read the built `.maxpat` and check the core↔patch contract in both directions: every selector the core emits is routed somewhere in the device, and every routed selector is one the core actually sends. That's the failure mode that doesn't show up as an error — a new `outlet(0, "…")` landing on nothing, silently doing nothing inside Live.
@@ -165,11 +174,37 @@ The **Mode** menu's `auto` position lets the groove draw one. Each groove carrie
 
 Any other Mode position overrides the draw outright. The **tim** freeze holds the mode along with the rest of the timbre layer.
 
+## Sound design
+
+A phrase carries its own sound as well as its notes: where Wave, PWM, Fold, WobRate, WobDepth and SubSat sit. Like a filter mode, the sound is an offset on top of the dials, not a takeover:
+
+```
+played = dial + Design × (phrase value − dial default)      clamped to 0–1
+```
+
+At Design 0 the dials play exactly as set. At Design 1, with the dials at their defaults, the device plays each phrase's own sound. In between, the dials set the centre and the phrase moves around it.
+
+Each groove gives every sound parameter a centre and a spread, and phrases draw around the centre. A groove keeps a recognisable sound across reseeds without every phrase sounding the same:
+
+| Groove | Sound |
+|---|---|
+| restrained | dark saw, barely folded, slow faint wobble, narrow spread |
+| rolling | saw, light fold, gentle wobble |
+| syncopated | even saw/pulse blend with a narrow pulse, some fold |
+| driving | pulse-leaning and folded, the hottest sub saturation, faint wobble |
+| acidic | saw, the fastest wobble, wide spread |
+| broken | the narrowest pulse, the heaviest fold, the deepest wobble at an erratic rate, the widest spread |
+| hypnotic | saw-leaning, a slow wobble that is always there, the tightest spread (its phrases sound alike) |
+
+The sound evolves with the lineage on the timbre share of the novelty budget. The chance that a mutation moves it scales with Novelty: never at 0, and about one mutation in three at the default. When it does move, one to three parameters are pulled part of the way toward a fresh draw from the groove, further at higher mutation depth. Each pull goes toward the groove rather than taking a random step, so a lineage wanders around its groove's sound instead of drifting off to the extremes. After a Groove change, it drifts across to the new groove.
+
+The **tim** freeze holds the sound, and **Sound** redraws it (with the filter mode) without touching the notes. Mutate, Return and Reseed send the new phrase's sound straight away instead of at the next bar. The sound is saved with the phrase, and a set saved before phrases had one reopens playing its dials exactly as it did. The sound draws from its own random stream, so a seed still writes the same bassline. The MIDI-effect build has no synth, so Design and Sound have nothing to shape there.
+
 ## Persistence
 
 The device serializes its generator state to outlet 0 as a `state` list, which the patch stores into `[pattr pg_state]` with a `set` message (storing without echoing, so there's no feedback loop). On load, `live.thisdevice` fires a `[t b b]`: the right outlet bangs the `pattr` first, so `Restore` hands the saved phrase back to the core *before* `pushall` runs — and `Restore` discards whatever regeneration Live's parameter restore had just queued.
 
-The state list ends in a small extras block, so fields added later — the bar form and the filter mode both live there now — serialize without bumping the state version. A list saved by an older build simply has no tail, and those fields fall back to their defaults, which is why existing Live Sets still restore.
+The state list ends in a small extras block, so fields added later — the bar form, the filter mode and the phrase's sound all live there now — serialize without bumping the state version. A list saved by an older build simply has no tail, and those fields fall back to their defaults, which is why existing Live Sets still restore.
 
 One deliberate limitation: `Restore` rebuilds `history` as `[phrase]`, because the lineage isn't serialized. After a reload the phrase and its identity (`A3`, generation, parent id) come back intact, but `Return` has no parent to go back to until you mutate again. It degrades to a no-op rather than to a wrong phrase.
 
@@ -177,10 +212,11 @@ One deliberate limitation: `Restore` rebuilds `history` as `[phrase]`, because t
 
 - Max for Live instrument device (MIDI in → audio out)
 - Legacy `js` (ES5) for the generative core — `js pg-core.js`, three outlets: synth params / note events / display
-- Plain MSP objects for the synth: saw+rect (0.6/0.45 mix) → drive → `tanh~` → `svf~` tapped for **both** lowpass and bandpass and blended per filter mode → `tanh~` nonlinearity (drive in / trim out) → resonance-compensating `onepole~ 120` low shelf → per-note DC offset → `tanh~` → `onepole~ 10` DC blocker (§2.4 asymmetric saturation, so loud notes bark on even harmonics and quiet ones stay clean) → amp
+- Plain MSP objects for the synth: `saw~`/`rect~` crossfaded by Wave (pulse width from PWM) → sine wavefolder crossfaded in by Fold → drive → `tanh~` → `svf~` tapped for **both** lowpass and bandpass and blended per filter mode → `tanh~` nonlinearity (drive in / trim out) → resonance-compensating `onepole~ 120` low shelf → per-note DC offset → `tanh~` → `onepole~ 10` DC blocker (§2.4 asymmetric saturation, so loud notes bark on even harmonics and quiet ones stay clean) → amp
 - Sub voice on its own path: octave-folded sine → saturator driven by SubSat with a compensating makeup gain → ducked by the filter envelope in proportion to resonance, so the sub steps out of the way of the squelch peak instead of fighting it
 - Wet network high-passed at 500 Hz with a Width-driven crossover frequency, taps modulated by `cycle~ 0.19 / 0.27` for diffusion, send shaped by its own `adsr~`, return ducked by the dry envelope, then mid/side width-encoded (`L = m + w·s`, `R = m − w·s`) so a mono fold attenuates the sides rather than cancelling them
-- `live.*` parameters (21 total, 3 banks) for automation and Push mapping; generator state persists separately via `[pattr pg_state]`
+- One `cycle~` wobble LFO shared by pitch (summed in before `mtof~`, so it reads as true vibrato) and cutoff (added after the filter envelope)
+- `live.*` parameters (27 total, 4 banks) for automation and Push mapping; generator state persists separately via `[pattr pg_state]`
 - Transport-synced clock: `metro 16n @quantize 16n` + `transport` position → JS phase correction, with an auxiliary `Task` that fires rushed steps ahead of their own grid tick
 
 A [Primordial Groove](https://primordialgroove.com) project.

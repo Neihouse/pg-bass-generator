@@ -34,7 +34,7 @@ def build(kind="instrument"):
     # Three rows of captioned section panels so the ~30 controls read as
     # (Live clips a Max for Live device at 169 px tall, so the rows are
     # packed to end at 168: anything below that never shows in Live.)
-    # macro / tone / sub+wet / wobble / identity / freeze / actions instead of
+    # macro / tone / sub+wet / wobble / design / identity / freeze / actions instead of
     # one flat grid. The longname is what Live automates and Push maps; the
     # message name is the handler in pg-core.js.
     DIAL_GROUPS = [  # (parameter longname, initial, js message)
@@ -57,6 +57,11 @@ def build(kind="instrument"):
             # §2.7 one LFO, shared: rate (Hz) and a depth that swings both the
             # filter cutoff and pitch together so the movement reads as one thing
             ("WobRate", 0.35, "wobrate"), ("WobDepth", 0.0, "wobdepth"),
+        ]),
+        ("design", "purple", [
+            # §2.8 how far each phrase's own sound (wave, PWM, fold, wobble, sub
+            # saturation) moves the dials above: 0 plays the dials as set
+            ("Design", 0.5, "design"),
         ]),
     ]
     row1 = ui.Row(p, y=36.0, h=56.0, panel_top=21.0, panel_h=74.0)
@@ -89,7 +94,8 @@ def build(kind="instrument"):
 
     BUTTON_GROUPS = [
         ("generate", "teal", ["Mutate", "Return", "Reseed"]),
-        ("regenerate layer", "coral", ["Rhythm", "Pitch", "Accent", "Slide"]),
+        # §2.8 Sound redraws the phrase's sound and filter mode, notes untouched
+        ("regenerate layer", "coral", ["Rhythm", "Pitch", "Accent", "Slide", "Sound"]),
         ("utility", "gray", ["Capture"]),
     ]
     row3 = ui.Row(p, y=149.0, h=16.0, panel_top=134.0, panel_h=34.0)
