@@ -10,17 +10,34 @@
 //
 // The sandbox shims the Max globals a core touches: outlet(), post(), Task
 // (with schedule/cancel, fired in time order by the fake clock) and Date.now.
+// Math.random is the sandbox's own seeded stream (opts.seed, default 1), so the
+// same seed and inputs emit the same messages every run; vary it to sample others.
 // sb.__state exposes {now, out, outT, advance(ms)} for tests that need them.
 
 "use strict";
 var fs = require("fs");
 var vm = require("vm");
 
+// Math for one sandbox: the host's methods through the prototype, plus an own
+// random drawn from a Park–Miller stream. Draws replay per seed, and neither the
+// host's Math.random nor another sandbox's draws can move them.
+function seededMath(seed) {
+  var s = Math.floor(Math.abs(seed)) % 2147483646 + 1;   // 1 .. 2^31-2, never 0
+  var m = Object.create(Math);
+  m.random = function () {
+    s = (s * 16807) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+  return m;
+}
+
 function loadCore(srcPath, opts) {
   opts = opts || {};
   var src = fs.readFileSync(srcPath, "utf8");
   var filename = srcPath.split("/").pop();
   var nOutlets = opts.outlets || 1;
+  var seed = opts.seed === undefined ? 1 : opts.seed;
+  if (typeof seed !== "number" || !isFinite(seed)) throw new Error("seed must be a number, got " + opts.seed);
 
   return function makeSandbox() {
     var state = {
@@ -43,7 +60,7 @@ function loadCore(srcPath, opts) {
     FakeTask.prototype.cancel = function () { this.at = -1; };
 
     var sandbox = {
-      Math: Math, JSON: JSON, String: String, parseInt: parseInt, parseFloat: parseFloat,
+      Math: seededMath(seed), JSON: JSON, String: String, parseInt: parseInt, parseFloat: parseFloat,
       isNaN: isNaN, Object: Object, Array: Array, Number: Number,
       Date: { now: function () { return state.now; } },
       Task: FakeTask,

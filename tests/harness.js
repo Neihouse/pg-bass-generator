@@ -559,7 +559,9 @@ test("delay times follow tempo", function () {
 test("register distribution: root-dominant, sub always 32.7-61.7 Hz", function () {
   var atRoot = 0, withinFifth = 0, aboveOctave = 0, total = 0;
   for (var g = 0; g < 7; g++) {
-    var sb = makeSandbox();
+    // a seed per groove: sandboxes on one seed drop the same steps, so pooling
+    // them would count one draw seven times and double the spread of the shares
+    var sb = mt.loadCore(CORE, { outlets: 3, seed: g + 1 })();
     call(sb, "groove", g);
     for (var m = 0; m < 6; m++) call(sb, "Mutate");
     tickSteps(sb, 64);
@@ -1230,6 +1232,29 @@ test("captured note events reproduce the phrase in beats", function () {
     });
     assert(early.length > 0, "phrase has rushed steps but no note captured ahead of its beat");
   }
+});
+
+// ---------------------------------------------------------------- the test sandbox
+
+// §5.1 step probability draws Math.random at play time, so two runs of the same
+// core only emit the same notes because maxtest gives each sandbox its own seeded
+// Math. Without it, comparing note streams before and after a change always fails.
+test("sandboxes with the same seed play identical note streams", function () {
+  var hostRandom = Math.random;
+  function notes(sb) { return JSON.stringify([sb.__state.out[1], sb.__state.outT[1]]); }
+
+  // all four exist before any of them plays, so a stream shared between them shows
+  var seed2 = mt.loadCore(CORE, { outlets: 3, seed: 2 });
+  var a = makeSandbox(), b = makeSandbox(), c = seed2(), d = seed2();
+  [a, b, c, d].forEach(function (sb) { tickSteps(sb, 200); });
+
+  assert(mt.evalIn(a, "Math") !== Math, "the sandbox is handed the host's Math");
+  assert(notes(a) === notes(b), "two sandboxes on the default seed played different notes");
+  assert(notes(c) === notes(d), "two sandboxes on seed 2 played different notes");
+  // seeds are free to differ, and these two do: equal streams would mean the seed
+  // never reaches Math.random, or the core stopped drawing it at play time
+  assert(notes(a) !== notes(c), "seed 2 played the default seed's notes");
+  assert(Math.random === hostRandom, "a sandbox replaced the host's Math.random");
 });
 
 // ---------------------------------------------------------------- core <-> patch contract
