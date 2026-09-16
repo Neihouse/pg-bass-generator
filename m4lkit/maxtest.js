@@ -177,21 +177,28 @@ function routedSelectors(patcher) {
 
 // every message a presentation control sends the core: [prepend <msg>] shims
 // (dials, menus, toggles) as {name, value}, message-box buttons as {name}.
-// `ignore` lists prepend selectors that are plumbing, not controls.
+// `ignore` lists prepend selectors that are plumbing, not controls. Recurses
+// into embedded subpatchers (e.g. a floating sound-design window) — Max and
+// Live discover live.* controls the same way, regardless of nesting depth.
 function patchControls(patcher, ignore) {
   ignore = ignore || ["set", "Restore", "pos"];
   var msgs = [], seen = {};
-  patcher.boxes.forEach(function (b) {
-    var t = b.box.text;
-    if (!t) return;
-    if (t.indexOf("prepend ") === 0) {
-      var m = t.split(/\s+/)[1];
-      if (ignore.indexOf(m) < 0 && !seen[m]) { seen[m] = 1; msgs.push({ name: m, value: 0.5 }); }
-    } else if (b.box.maxclass === "message" && b.box.presentation === 1 &&
-               /^[A-Z][A-Za-z]+$/.test(t) && !seen[t]) {
-      seen[t] = 1; msgs.push({ name: t });
-    }
-  });
+  function walk(pat) {
+    pat.boxes.forEach(function (b) {
+      var t = b.box.text;
+      if (t) {
+        if (t.indexOf("prepend ") === 0) {
+          var m = t.split(/\s+/)[1];
+          if (ignore.indexOf(m) < 0 && !seen[m]) { seen[m] = 1; msgs.push({ name: m, value: 0.5 }); }
+        } else if (b.box.maxclass === "message" && b.box.presentation === 1 &&
+                   /^[A-Z][A-Za-z]+$/.test(t) && ignore.indexOf(t) < 0 && !seen[t]) {
+          seen[t] = 1; msgs.push({ name: t });
+        }
+      }
+      if (b.box.patcher) walk(b.box.patcher);
+    });
+  }
+  walk(patcher);
   return msgs;
 }
 

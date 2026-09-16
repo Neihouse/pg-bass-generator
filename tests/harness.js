@@ -1564,7 +1564,9 @@ test("every selector the core emits is routed in the built device", function () 
 // the other half of the same contract: every control in the patch has to reach
 // a handler that exists, or the dial turns and nothing happens
 test("every UI control in the built device reaches a core handler", function () {
-  var controls = mt.patchControls(mt.readPatch(PATCH));
+  // "Waveform" opens the floating scope~ window via [pcontrol], never touches
+  // pg-core.js — it is UI plumbing, not a musical control.
+  var controls = mt.patchControls(mt.readPatch(PATCH), ["set", "Restore", "pos", "Waveform"]);
   assert(controls.length >= 20, "found only " + controls.length + " controls to check");
   var sb = makeSandbox();
   controls.forEach(function (c) {

@@ -14,14 +14,17 @@ On its outlets:
 """
 
 
-def wire_controls(p, sources, buttons=(), js="js"):
-    """Each (box key, msg) control reaches the core as "<msg> <value>"."""
+def wire_controls(p, sources, buttons=(), dst="js", inlet=0):
+    """Each (box key, msg) control reaches `dst` as "<msg> <value>" on `inlet`.
+    `dst` is usually the js core itself, but can be any box that accepts raw
+    "<msg> <value>"/caption messages — e.g. an `outlet` box carrying controls
+    built in a subpatcher out to wherever the caller wires that outlet next."""
     for key, msg in sources:
         p.obj("pre_" + msg, f"prepend {msg}", numinlets=1, numoutlets=1)
         p.connect(key, 0, "pre_" + msg, 0)
-        p.connect("pre_" + msg, 0, js, 0)
+        p.connect("pre_" + msg, 0, dst, inlet)
     for key in buttons:
-        p.connect(key, 0, js, 0)
+        p.connect(key, 0, dst, inlet)
 
 
 def clock(p, js="js", interval="16n"):

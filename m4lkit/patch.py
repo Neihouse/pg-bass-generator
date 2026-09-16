@@ -71,20 +71,73 @@ class Patch:
                         numinlets=numinlets, numoutlets=numoutlets, outlettype=outlettype)
 
     def panel(self, key, pres, bgcolor, bordercolor, rounded=8):
-        """A borderless-click `panel` UI object used only to group controls in
-        the presentation view. Must be boxed before the controls it groups —
-        box order is z-order in the patcher, and a panel added after its
-        children would sit on top and eat their clicks."""
+        """A `panel` UI object used only to group controls in the presentation
+        view. Call it whenever reads best — to_dict() sinks every panel behind
+        the rest of the patch, so it cannot cover the controls it groups."""
         return self.box(key, "panel", pres=pres,
                         extra={"bgcolor": bgcolor, "bordercolor": bordercolor,
                                "rounded": rounded, "border": 1},
                         numinlets=1, numoutlets=0)
+
+    def subpatcher(self, key, text, inner, rect, varname=None, pres=None,
+                   numinlets=0, numoutlets=0, outlettype=None,
+                   title=None, openinpresentation=0):
+        """A subpatcher box: `inner` is a separate Patch built with its own
+        box()/sig()/connect() calls (own id-space, own boxes/lines). It opens
+        as an independent floating OS window — not constrained by Live's
+        169px rack cap, since that cap (`openrect` in to_dict()) only applies
+        to the top-level device patcher, not to a nested subpatcher's own
+        `rect`. Give it a `varname` (scripting name) so a [pcontrol @target
+        <varname>] elsewhere in this patch can open/front/close it."""
+        assert key not in self.ids, f"duplicate box key: {key}"
+        self.counter += 1
+        oid = f"obj-{self.counter}"
+        self.ids[key] = oid
+
+        validate(inner)
+        inner_patcher = inner.to_dict()["patcher"]
+        inner_patcher.pop("project", None)
+        inner_patcher.pop("openrect", None)
+        inner_patcher["rect"] = rect
+        inner_patcher["openinpresentation"] = openinpresentation
+        if title is not None:
+            inner_patcher["title"] = title
+
+        b = {
+            "id": oid,
+            "maxclass": "newobj",
+            "text": text,
+            "numinlets": numinlets,
+            "numoutlets": numoutlets,
+            "patching_rect": self._next_rect(),
+            "patcher": inner_patcher,
+            "saved_object_attributes": {"description": "", "digest": "",
+                                         "globalpatchername": "", "tags": ""},
+        }
+        if varname:
+            b["varname"] = varname
+        if numoutlets > 0:
+            b["outlettype"] = outlettype if outlettype else [""] * numoutlets
+        if pres is not None:
+            b["presentation"] = 1
+            b["presentation_rect"] = pres
+        self.boxes.append({"box": b})
+        return key
 
     def connect(self, src, outlet, dst, inlet):
         self.lines.append({"patchline": {
             "source": [self.ids[src], outlet],
             "destination": [self.ids[dst], inlet],
         }})
+
+    def _ordered_boxes(self):
+        """Max draws `boxes` front-to-back: index 0 is frontmost, the last entry
+        sits at the very back. Panels are backdrops, so they go last — earliest
+        created deepest, since a full-window backdrop is built before the
+        section panels that sit on it."""
+        panels = [b for b in self.boxes if b["box"]["maxclass"] == "panel"]
+        rest = [b for b in self.boxes if b["box"]["maxclass"] != "panel"]
+        return rest + panels[::-1]
 
     def to_dict(self):
         # patcher-level parameter map + 8-slot banks (Push / Live macro paging)
@@ -164,7 +217,7 @@ class Patch:
                     "includepackages": 0,
                 },
                 "autosave": 0,
-                "boxes": self.boxes,
+                "boxes": self._ordered_boxes(),
                 "lines": self.lines,
             }
         }

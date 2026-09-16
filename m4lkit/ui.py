@@ -51,8 +51,8 @@ def section(p, key, label, ramp, rect):
     p.panel(key + "_panel", rect, bgcolor=list(bg) + [0.22], bordercolor=list(bd) + [0.5])
     lx, ly, lw, _lh = rect
     p.box(key + "_lbl", "comment", label,
-          pres=[lx + 8.0, ly + 3.0, lw - 12.0, 12.0],
-          extra={"fontsize": 8.5, "textcolor": list(lb) + [1.0]}, numoutlets=0)
+          pres=[lx + 8.0, ly + 2.0, lw - 12.0, 10.0],
+          extra={"fontsize": 8.0, "textcolor": list(lb) + [1.0]}, numoutlets=0)
 
 
 class Row:

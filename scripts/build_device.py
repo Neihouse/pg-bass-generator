@@ -22,89 +22,142 @@ from m4lkit.patch import Patch, write_device
 
 DEVICE_DIR = ROOT / "device"
 
+# Every control on the device, grouped for both the floating sound-design
+# window's sectioned panels (build_wave_window) and Live's automation/Push
+# mapping (the longname). The message name is the handler in pg-core.js.
+DIAL_GROUPS = [  # (label, ramp, [(parameter longname, initial, js message)])
+    ("macro", "gray", [
+        ("Novelty", 0.45, "novelty"), ("Density", 0.5, "density"),
+        ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
+    ]),
+    ("tone", "coral", [
+        ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
+        ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
+        ("Decay", 0.5, "decay"),
+        # §2.6 waveform shaping: saw<->pulse blend, pulse width, wavefolder
+        ("Wave", 0.3, "wave"), ("PWM", 0.5, "pw"), ("Fold", 0.0, "fold"),
+    ]),
+    ("sub + wet", "teal", [
+        ("Sub", 0.6, "sub"), ("SubSat", 0.35, "subsat"),  # §2.5 sub saturation
+        ("Wet", 0.3, "wet"), ("Width", 0.6, "width"),     # §3.4 stereo width
+    ]),
+    ("wobble", "amber", [
+        # §2.7 one LFO, shared: rate (Hz) and a depth that swings both the
+        # filter cutoff and pitch together so the movement reads as one thing
+        ("WobRate", 0.35, "wobrate"), ("WobDepth", 0.0, "wobdepth"),
+    ]),
+    ("design", "purple", [
+        # §2.8 how far each phrase's own sound (wave, PWM, fold, wobble, sub
+        # saturation) moves the dials above: 0 plays the dials as set
+        ("Design", 0.5, "design"),
+    ]),
+]
+
+MENUS = [  # (parameter longname, items, initial index, js message, width)
+    ("Groove", ["restrained", "rolling", "syncopated",
+                "driving", "acidic", "broken", "hypnotic"], 1, "groove", 112.0),
+    # §2.1 "auto" lets the groove's own affinity weights pick the mode
+    ("Mode", ["auto", "round", "wet", "squelch", "bite",
+              "hollow", "rubber", "acid"], 0, "fmode", 92.0),
+    ("Root", ["C", "Db", "D", "Eb", "E", "F",
+              "Gb", "G", "Ab", "A", "Bb", "B"], 0, "root", 58.0),
+    ("Length", ["1 bar", "2 bars", "4 bars"], 1, "plen", 70.0),
+    # §2.5 how far down the sub sits under the note
+    ("SubOct", ["sub -1", "sub -2"], 0, "suboct", 66.0),
+]
+# §5.3 the global lock plus the three per-layer freezes: rhythm, pitch and
+# timbre hold independently, so one layer can drift while the others don't.
+TOGGLES = [  # (parameter longname, js message, caption, caption width)
+    ("Lock", "lock", "lock", 30.0),
+    ("FrzRhythm", "frzr", "rhy", 26.0),
+    ("FrzPitch", "frzp", "pit", 26.0),
+    ("FrzTimbre", "frzt", "tim", 26.0),
+]
+BUTTON_GROUPS = [
+    ("generate", "teal", ["Mutate", "Return", "Reseed"]),
+    # §2.8 Sound redraws the phrase's sound and filter mode, notes untouched
+    ("regenerate layer", "coral", ["Rhythm", "Pitch", "Accent", "Slide", "Sound"]),
+    ("utility", "gray", ["Capture"]),
+]
+
+WAVE_RECT = [160.0, 100.0, 980.0, 640.0]   # floating window: x, y, w, h
+
+
+def build_wave_window():
+    """The Serum-style sound-design window: a big hero waveform up top, the
+    device's full control set below in roomy sectioned panels. It opens as
+    an independent floating OS window, not confined to Live's 169 px rack
+    cap — that cap only applies to the top-level device patcher (see
+    Patch.subpatcher() in m4lkit/patch.py).
+
+    Controls here can't patchcord straight to the js core in the parent
+    patcher — a subpatcher is its own box graph. Each control instead feeds
+    a local `outlet` box (ctrl_out), which becomes a real outlet on the
+    subpatcher box in the parent, wired there to js like any other source.
+    """
+    wp = Patch("instrument")
+    _, _, ww, wh = WAVE_RECT
+    wp.panel("bg", pres=[0.0, 0.0, ww, wh],
+             bgcolor=[0.086, 0.086, 0.094, 1.0], bordercolor=[0.086, 0.086, 0.094, 1.0],
+             rounded=0)
+
+    wp.box("in1", "inlet", numinlets=0, numoutlets=1, outlettype=["signal"],
+           extra={"patching_rect": [20.0, 20.0, 30.0, 30.0], "comment": "(signal) audio in"})
+    wp.box("in2", "inlet", numinlets=0, numoutlets=1, outlettype=[""],
+           extra={"patching_rect": [60.0, 20.0, 30.0, 30.0], "comment": "pcontrol target"})
+    wp.box("ctrl_out", "outlet", numinlets=1, numoutlets=0,
+           extra={"patching_rect": [100.0, 20.0, 30.0, 30.0], "comment": "control messages out"})
+
+    wp.box("title", "comment", "PG BASS GENERATOR",
+           pres=[8.0, 8.0, 600.0, 20.0],
+           extra={"fontface": 1, "fontsize": 15.0, "textcolor": [0.92, 0.92, 0.92, 1.0]},
+           numoutlets=0)
+    wp.box("subtitle", "comment", "live waveform · sound design",
+           pres=[8.0, 27.0, 600.0, 14.0],
+           extra={"fontsize": 10.0, "textcolor": [0.55, 0.55, 0.55, 1.0]}, numoutlets=0)
+
+    wp.box("bigscope", "scope~", pres=[8.0, 44.0, 944.0, 230.0],
+           extra={"bgcolor": [0.02, 0.02, 0.02, 1.0], "bufsize": 4096},
+           numinlets=1, numoutlets=0)
+    wp.connect("in1", 0, "bigscope", 0)
+
+    row1 = ui.Row(wp, y=306.0, h=58.0, panel_top=286.0, panel_h=86.0, gap=18.0)
+    for label, ramp, group in DIAL_GROUPS[:2]:          # macro, tone
+        row1.dials(label, ramp, group, pitch=72.0, w=60.0)
+
+    row2 = ui.Row(wp, y=404.0, h=58.0, panel_top=384.0, panel_h=86.0, gap=18.0)
+    for label, ramp, group in DIAL_GROUPS[2:]:          # sub + wet, wobble, design
+        row2.dials(label, ramp, group, pitch=72.0, w=60.0)
+
+    row3 = ui.Row(wp, y=500.0, h=20.0, panel_top=482.0, panel_h=40.0, gap=18.0)
+    row3.menus("identity", "amber", MENUS)
+    row3.toggles("freeze", "pink", TOGGLES)
+
+    row4 = ui.Row(wp, y=552.0, h=20.0, panel_top=534.0, panel_h=40.0, gap=18.0)
+    for label, ramp, names in BUTTON_GROUPS:
+        row4.buttons(label, ramp, names)
+
+    sources = row1.sources + row2.sources + row3.sources
+    core.wire_controls(wp, sources, row4.button_keys, dst="ctrl_out")
+    return wp
+
 
 def build(kind="instrument"):
     p = Patch(kind)
 
-    # ---------------------------------------------------------------- UI (presentation)
+    # ---------------------------------------------------------------- UI (rack, 169 px)
+    # The full control set above lives in the floating sound-design window
+    # now (build_wave_window) — Live's 169 px device-height cap applies only
+    # to this top-level patcher, not to a subpatcher's own floating window.
+    # The rack keeps just the essentials: title, live status text, a
+    # waveform strip for an at-a-glance read, and the button that opens the
+    # big window (wired further down, once `js` and `folded` exist).
     p.box("title", "comment", "PG BASS GENERATOR — Primordial Groove",
           pres=[4.0, 3.0, 260.0, 16.0],
           extra={"fontface": 1, "fontsize": 11.0}, numoutlets=0)
 
-    # Three rows of captioned section panels so the ~30 controls read as
-    # (Live clips a Max for Live device at 169 px tall, so the rows are
-    # packed to end at 168: anything below that never shows in Live.)
-    # macro / tone / sub+wet / wobble / design / identity / freeze / actions instead of
-    # one flat grid. The longname is what Live automates and Push maps; the
-    # message name is the handler in pg-core.js.
-    DIAL_GROUPS = [  # (parameter longname, initial, js message)
-        ("macro", "gray", [
-            ("Novelty", 0.45, "novelty"), ("Density", 0.5, "density"),
-            ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
-        ]),
-        ("tone", "coral", [
-            ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
-            ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
-            ("Decay", 0.5, "decay"),
-            # §2.6 waveform shaping: saw<->pulse blend, pulse width, wavefolder
-            ("Wave", 0.3, "wave"), ("PWM", 0.5, "pw"), ("Fold", 0.0, "fold"),
-        ]),
-        ("sub + wet", "teal", [
-            ("Sub", 0.6, "sub"), ("SubSat", 0.35, "subsat"),  # §2.5 sub saturation
-            ("Wet", 0.3, "wet"), ("Width", 0.6, "width"),     # §3.4 stereo width
-        ]),
-        ("wobble", "amber", [
-            # §2.7 one LFO, shared: rate (Hz) and a depth that swings both the
-            # filter cutoff and pitch together so the movement reads as one thing
-            ("WobRate", 0.35, "wobrate"), ("WobDepth", 0.0, "wobdepth"),
-        ]),
-        ("design", "purple", [
-            # §2.8 how far each phrase's own sound (wave, PWM, fold, wobble, sub
-            # saturation) moves the dials above: 0 plays the dials as set
-            ("Design", 0.5, "design"),
-        ]),
-    ]
-    row1 = ui.Row(p, y=36.0, h=56.0, panel_top=21.0, panel_h=74.0)
-    for label, ramp, group in DIAL_GROUPS:
-        row1.dials(label, ramp, group)
-
-    MENUS = [  # (parameter longname, items, initial index, js message, width)
-        ("Groove", ["restrained", "rolling", "syncopated",
-                    "driving", "acidic", "broken", "hypnotic"], 1, "groove", 112.0),
-        # §2.1 "auto" lets the groove's own affinity weights pick the mode
-        ("Mode", ["auto", "round", "wet", "squelch", "bite",
-                  "hollow", "rubber", "acid"], 0, "fmode", 92.0),
-        ("Root", ["C", "Db", "D", "Eb", "E", "F",
-                  "Gb", "G", "Ab", "A", "Bb", "B"], 0, "root", 58.0),
-        ("Length", ["1 bar", "2 bars", "4 bars"], 1, "plen", 70.0),
-        # §2.5 how far down the sub sits under the note
-        ("SubOct", ["sub -1", "sub -2"], 0, "suboct", 66.0),
-    ]
-    # §5.3 the global lock plus the three per-layer freezes: rhythm, pitch and
-    # timbre hold independently, so one layer can drift while the others don't.
-    TOGGLES = [  # (parameter longname, js message, caption, caption width)
-        ("Lock", "lock", "lock", 30.0),
-        ("FrzRhythm", "frzr", "rhy", 26.0),
-        ("FrzPitch", "frzp", "pit", 26.0),
-        ("FrzTimbre", "frzt", "tim", 26.0),
-    ]
-    row2 = ui.Row(p, y=113.0, h=15.0, panel_top=98.0, panel_h=33.0)
-    row2.menus("identity", "amber", MENUS)
-    row2.toggles("freeze", "pink", TOGGLES)
-
-    BUTTON_GROUPS = [
-        ("generate", "teal", ["Mutate", "Return", "Reseed"]),
-        # §2.8 Sound redraws the phrase's sound and filter mode, notes untouched
-        ("regenerate layer", "coral", ["Rhythm", "Pitch", "Accent", "Slide", "Sound"]),
-        ("utility", "gray", ["Capture"]),
-    ]
-    row3 = ui.Row(p, y=149.0, h=16.0, panel_top=134.0, panel_h=34.0)
-    for label, ramp, names in BUTTON_GROUPS:
-        row3.buttons(label, ramp, names)
-
     # ---------------------------------------------------------------- core + clock
     p.obj("js", "js pg-core.js", numinlets=1, numoutlets=3)
-    core.wire_controls(p, row1.sources + row2.sources, row3.button_keys)
     core.clock(p)
 
     # ---------------------------------------------------------------- js outlet routing
@@ -210,6 +263,45 @@ def build(kind="instrument"):
 
     # §2.6 wavefolder on the oscillator mix, crossfaded in by Fold
     folded = dsp.wavefolder(p, "fold", "osc_mix", "l_fold")
+
+    # a waveform monitor tapped right here, post-Wave/PWM/Fold, so the three
+    # timbre controls' combined shape is visible without leaving the device.
+    # With the full control set relocated to the floating window, the rack
+    # has room for a much taller quick-glance strip under Live's 169 px cap.
+    # bufsize 4096 (~93 ms at 44.1k) keeps a few cycles on screen even at the
+    # lowest sub-bass notes (~30 Hz).
+    p.box("scope", "scope~", pres=[8.0, 24.0, 952.0, 138.0],
+          extra={"bgcolor": [0.078, 0.078, 0.078, 1.0], "bufsize": 4096},
+          numinlets=1, numoutlets=0)
+    p.connect(folded, 0, "scope", 0)
+
+    # the full Serum-style sound-design window: hero waveform + every
+    # control, sectioned. Not confined to Live's 169 px rack — that cap only
+    # applies to this top-level device patcher (see Patch.subpatcher()).
+    # Opened on demand from a title-bar button via [pcontrol]. Its controls
+    # can't patchcord straight to `js` (a subpatcher is its own box graph),
+    # so ctrl_out — the subpatcher's outlet 0 — carries them back out here.
+    wave_p = build_wave_window()
+    p.subpatcher("wave_window", "p wave_window", wave_p,
+                 rect=WAVE_RECT, varname="wave_window",
+                 title="PG Bass Generator — Sound Design",
+                 numinlets=2, numoutlets=1, openinpresentation=1)
+    p.connect(folded, 0, "wave_window", 0)
+    p.connect("wave_window", 0, "js", 0)
+    # pcontrol takes no creation arguments and has no @target attribute — it
+    # opens/closes whatever patcher/subpatcher box is patched into its
+    # outlet, so the open/close command reaches wave_window via a real
+    # patchcord (into its second, otherwise-unwired inlet) rather than by name.
+    p.obj("pctrl_wave", "pcontrol", numinlets=1, numoutlets=1, outlettype=[""])
+    p.connect("pctrl_wave", 0, "wave_window", 1)
+    # clicking it feeds a hidden [message open] (its own content, ignoring
+    # what arrives) so pcontrol gets the exact protocol word it expects
+    # while the visible button stays self-explanatory.
+    p.box("btn_waveform", "message", "Open GUI", pres=[860.0, 3.0, 92.0, 16.0],
+          extra={"fontsize": 9.0}, numinlets=2, numoutlets=1)
+    p.box("msg_wave_open", "message", "open", numinlets=2, numoutlets=1)
+    p.connect("btn_waveform", 0, "msg_wave_open", 0)
+    p.connect("msg_wave_open", 0, "pctrl_wave", 0)
 
     # ---------------------------------------------------------------- drive -> filter
     p.sig("drive_mul", "*~ 1.", 2)     # drive amount (smoothed)
