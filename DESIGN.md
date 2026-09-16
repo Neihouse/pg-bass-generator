@@ -628,6 +628,58 @@ An edit lasts one cycle. `phraseAdvance()` mutates at every phrase boundary
 That is the existing contract for anything the player fixes in place, and the
 lane does not quietly change it: Lock is the gesture that says *keep this*.
 
+## 5.7 What a knob looks like
+
+Every dial in the device shipped in Max's factory grey, and the colour a stage
+owns lived only in the panel behind it and the caption above it. That is the
+wrong way round: a panel is a boundary, and the control is the thing the eye
+actually goes to. So each `live.dial` now wears its own stage's ink — the
+*filled* arc, the part that moves, in the stage's colour; the travel it moves
+along neutral and faint behind it; its name and its readout in the same grey
+across the whole window, so eighteen labels do not turn into six competing
+voices. The triangle stays, painted in the stage's colour too: it is
+click-to-restore, a real affordance, and hiding it to tidy the picture would
+cost a gesture.
+
+`live.dial`'s colour roles do not read the way they are named — `dialcolor` is
+the filled travel, `fgdialcolor` the track behind it — and getting them
+backwards produces a dial that shows its stage's colour as a full ring that
+never moves, with the value drawn in grey on top of it. All 570 `live.dial`s in
+Max's own BEAP and Vizzie packages agree on which is which, and `m4lkit/ui.py`
+records it where the colours are set, so it cannot quietly invert again.
+
+**Where colour runs out.** Four attributes is the whole of `live.dial`'s
+appearance. However they are set, the result is the flat arc every Live device
+already wears, and no amount of colouring gets past that. Drawing a knob —
+a body with a rim, a value arc with a glow behind it, a pointer that reads at a
+glance from across the room — needs a script, and a script is not a Live
+parameter: automation, MIDI mapping and Push speak to `live.*` boxes and
+nothing else. A drawn control that replaced the dial would look better and
+would not be a control.
+
+So nothing is replaced. The `live.dial` stays exactly where it was, keeps its
+parameter, and goes transparent — by *alpha*, never `invisible`, because a
+colour cannot change hit-testing and an attribute that hides a box might. The
+drawing goes on top of it, `ignoreclick`, which passes the mouse straight
+through: native drag, fine-drag, right-click-to-map and automation write all
+still land on a real control that Live can see. The script only paints. It is
+told what to paint by the dial's own outlet, through one `[prepend set <msg>]`
+each — the same outlet the core listens to, so the drawing and the sound are
+the same number by construction rather than by agreement — and the dial's
+resting value rides in as a creation argument, so the knob is drawn correctly
+on the first frame. A mod ring may start blank, because *nothing is being
+pushed* is a true thing to show. A knob may not: an empty knob is a hole.
+
+The drawn knob sits in front of the dial and *behind* the mod ring, so § 5.5
+still reads on top of it, at a smaller radius, inside the pointer. Both take
+their geometry from the same measurement in `m4lkit/ui.py`, which is what keeps
+two scripts drawn from two different boxes sharing one centre.
+
+**One stage first.** `device/pg-knob.js` is turned on for OSC alone. Its three
+knobs sit on the same row, on the same panel, under the same light as the
+fifteen stock ones — which is the only honest way to judge whether the rest of
+the window should follow.
+
 ---
 
 # 6. Meta controls

@@ -240,13 +240,23 @@ def build_wave_window():
     # Signal order, left to right and top to bottom. `y`/`h` size an ordinary
     # dial; a MACRO_W one grows upward from the shared bottom edge, which is
     # why each panel starts well above its row.
+    # A named stage hands its knobs to a [jsui] (m4lkit/ui.py, Row.knobs): the
+    # live.dials go transparent and pg-knob.js draws over them, while the mouse
+    # still lands on the real controls underneath. OSC goes first and alone, so
+    # the drawn knobs and Live's stock ones sit on the same row and the same
+    # panel, under the same light — which is the only honest way to judge
+    # whether the rest of the page should follow.
+    drawn = {"osc": "pg-knob.js"}
+
     row1 = ui.Row(wp, y=316.0, h=70.0, panel_top=262.0, panel_h=154.0, gap=30.0)
     for label, ramp, dials, menus in STAGES[:3]:        # osc, sub, filter
-        row1.stage(label, ramp, dials, menus, pitch=88.0, w=72.0)
+        row1.stage(label, ramp, dials, menus, pitch=88.0, w=72.0,
+                   drawn=drawn.get(label))
 
     row2 = ui.Row(wp, y=482.0, h=70.0, panel_top=428.0, panel_h=132.0, gap=30.0)
     for label, ramp, dials, menus in STAGES[3:]:        # shape, space, character
-        row2.stage(label, ramp, dials, menus, pitch=88.0, w=72.0)
+        row2.stage(label, ramp, dials, menus, pitch=88.0, w=72.0,
+                   drawn=drawn.get(label))
 
     # §2.8 made visible: one click-through [jsui] per row, drawing each phrase's
     # pushed value as a second ring inside the dial it moved (DESIGN.md §5.5).

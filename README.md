@@ -36,7 +36,7 @@ v0.2 was the low-end voicing pass: the register grammar was tightened toward the
 
 ## Loading the device
 
-1. Keep the `device/` folder together — `pg-core.js` and `pg-lane.js` must sit next to both `.amxd` files so Max can resolve the scripts, and `pg-mod.js` alongside them for the instrument build (the MIDI build has no sound page to ring).
+1. Keep the `device/` folder together — `pg-core.js` and `pg-lane.js` must sit next to both `.amxd` files so Max can resolve the scripts, and `pg-mod.js` and `pg-knob.js` alongside them for the instrument build (the MIDI build has no sound page to draw on).
 2. Drag `device/PG Bass Generator.amxd` onto a **MIDI track** in Ableton Live. (`PG Bass Generator MIDI.amxd` is the MIDI-effect build of the same generator — see [Getting the bassline out as MIDI](#getting-the-bassline-out-as-midi).)
 3. Press play. The generator is transport-synced (16th-note clock) and starts producing phrases immediately; audio comes out of the device directly (it is an instrument, not a MIDI effect).
 
@@ -130,6 +130,7 @@ generator mutates at phrase boundaries, so turn **Lock** on to keep one.
 - `device/pg-mod.js` — the mod rings: a click-through `jsui` laid over the sound page's dials that draws each phrase's *played* value as a second ring inside the knob (DESIGN.md §5.5), so the Design macro reads as modulation instead of as a dial disagreeing with itself. It takes the core's synth outlet whole and undoes `pushSynth`'s DSP scaling to get back to the dial's 0–1; the six inverses are the only thing it knows about §2.8. Read-only. ES5, `mgraphics`.
 - `scripts/build_device.py` — generates both devices programmatically. One `build(kind)` shares the UI, core, clock and persistence; `kind="instrument"` appends the synth and `plugout~` (`iiii`), `kind="midi"` appends `midiout` instead (`mmmm`). Only the PG-specific parts live here: control layout, parameter lists and the voice graph.
 - `m4lkit/` — the device-independent toolkit the builder sits on: patcher JSON + `.amxd` container writer, presentation-row layout for Live controls, the `[js]`-core plumbing (controls, clock, routing, smoothing, `[pattr]` persistence, MIDI out) and reusable DSP blocks. See `m4lkit/README.md`.
+- `device/pg-knob.js` — the drawn knobs: a click-through `jsui` that paints the OSC stage's three controls outright (DESIGN.md §5.7), over `live.dial`s turned transparent but left in place, so the mouse, the automation and the MIDI mapping still land on real Live parameters. Each dial feeds it its own value through a `[prepend set <msg>]`, and opens at a value handed in as a creation argument, so a knob is never drawn blank. Read-only. ES5, `mgraphics`.
 - `tests/harness.js` — the PG-specific tests. The fake Max environment it runs `pg-core.js` in (Task scheduler, fake clock, seeded `Math.random`, outlet recorder, patch readers, runner) is `m4lkit/maxtest.js`. Two of the tests read the built `.maxpat` and check the core↔patch contract in both directions: every selector the core emits is consumed somewhere in the device — by a `[route]`, or by a handler in a `jsui` script the patch loads — and every routed selector is one the core actually sends. That's the failure mode that doesn't show up as an error — a new `outlet(0, "…")` landing on nothing, silently doing nothing inside Live.
 
 Run the tests:

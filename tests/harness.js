@@ -2234,16 +2234,34 @@ function coreOutletsFeeding(root, pat, boxId, inletIdx) {
 // numbers appearing in the Max window, which no test can see. So the rule is
 // checked at the source: every script fed one of the core's outlets whole has
 // to claim, by name, each selector on it that Max already owns.
+//
+// Not every display is fed that way. pg-knob.js is hung off the dials it
+// draws, one [prepend] each, so the builder chose the selector — and then the
+// question is simply whether the script answers to the name on the box.
 test("no selector reaches a display by way of a Max built-in", function () {
   var scripts = 0;
   [PATCH, MIDI_PATCH].forEach(function (file) {
     var patch = mt.readPatch(file);
     var sb = exerciseEverything();
     mt.jsuiBoxes(patch).forEach(function (j) {
-      var outs = coreOutletsFeeding(patch, j.patcher, j.id);
-      assert(outs.length > 0,
-        j.filename + " in " + path.basename(file) + " is fed by no core outlet");
+      var fed = mt.feeders(j.patcher, j.id);
+      assert(fed.length > 0,
+        j.filename + " in " + path.basename(file) + " is fed by nothing at all");
       var claimed = mt.jsHandlers(path.join(DEVICE, j.filename));
+
+      // A [prepend] names the selector outright, so there is nothing to infer
+      // and no anything() to fall through to: a name the script does not
+      // answer to is a display that silently never updates.
+      fed.forEach(function (f) {
+        var m = /^prepend\s+(\S+)/.exec(String(f.text || ""));
+        if (!m) return;
+        assert(claimed.indexOf(m[1]) >= 0,
+          j.filename + " is fed \"" + m[1] + "\" by a [" + f.text +
+          "] and has no handler of that name");
+      });
+
+      var outs = coreOutletsFeeding(patch, j.patcher, j.id);
+      if (!outs.length) return;    // control-fed, and already checked above
       scripts++;
       outs.forEach(function (n) {
         mt.emittedSelectors(sb, n).forEach(function (sel) {
@@ -2883,6 +2901,387 @@ test("the ring follows live.dial's own sweep", function () {
     assert(o.x >= -1 && o.y >= -1 && o.x1 <= j.rect[2] + 1 && o.y1 <= j.rect[3] + 1,
       "a ring overlay drew outside its box: " + JSON.stringify([o.x, o.y, o.x1, o.y1]));
   });
+});
+
+// ----------------------------------------------------------------
+// The knobs themselves.
+//
+// Two things happened here at once, and they are separable on purpose. Every
+// live.dial in the device now carries its stage's colours instead of Max's
+// factory grey (m4lkit/ui.py, dial_look), and one stage — OSC — has its dials
+// turned transparent and drawn over by device/pg-knob.js instead (Row.knobs).
+// The second only works because of what it does *not* do: the live.dial stays
+// where it was, keeps its parameter, and keeps the mouse, so automation, MIDI
+// mapping and Push never learn that anything changed. These tests hold that
+// line — a promoted dial that stopped being a real control, or a drawn knob
+// that drifted off the dial under it, would both look fine in a screenshot.
+
+var C_NEUTRAL = [0.827, 0.820, 0.780];   // ui.py NEUTRAL: RAMP gray's label200
+
+function contains(outer, inner) {
+  return inner[0] >= outer[0] && inner[1] >= outer[1] &&
+         inner[0] + inner[2] <= outer[0] + outer[2] &&
+         inner[1] + inner[3] <= outer[1] + outer[3];
+}
+
+function sameRGB(a, b, tol) {
+  tol = tol === undefined ? 0.002 : tol;
+  return Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol &&
+         Math.abs(a[2] - b[2]) <= tol;
+}
+
+// A stage paints its caption in its own ink (m4lkit/ui.py, section), so the
+// caption is where a test reads what colour a stage is — no second copy of the
+// RAMP table here to fall out of step with the one in ui.py.
+function stageOf(pat, rect) {
+  var boxes = pat.boxes.map(function (b) { return b.box; });
+  var panel = boxes.filter(function (b) {
+    return b.maxclass === "panel" && b.presentation_rect &&
+           contains(b.presentation_rect, rect);
+  })[0];
+  if (!panel) return null;
+  var p = panel.presentation_rect;
+  var lbl = boxes.filter(function (b) {
+    return b.maxclass === "comment" && b.presentation_rect &&
+           Math.abs(b.presentation_rect[0] - (p[0] + 8.0)) < 0.01 &&
+           Math.abs(b.presentation_rect[1] - (p[1] + 2.0)) < 0.01;
+  })[0];
+  return lbl ? { label: String(lbl.text), ink: lbl.textcolor } : null;
+}
+
+function eachPatcher(pat, fn, where) {
+  fn(pat, where || "the rack");
+  pat.boxes.forEach(function (b) {
+    if (b.box.patcher) eachPatcher(b.box.patcher, fn, b.box.varname || where);
+  });
+}
+
+function dialBoxes(pat) {
+  return pat.boxes.map(function (b) { return b.box; })
+    .filter(function (b) { return b.maxclass === "live.dial"; });
+}
+
+function knobOverlays(pat) {
+  return mt.jsuiBoxes(pat).filter(function (j) { return j.filename === "pg-knob.js"; });
+}
+
+// what one overlay declares: the stage's ink once, then six atoms per knob,
+// exactly as device/pg-knob.js reads them
+function knobInk(j) { return [+j.args[0], +j.args[1], +j.args[2]]; }
+// where a painted point lands relative to a knob: how far out, and how far
+// round from live.dial's own start angle (0 at rest, DIAL_SPAN at full)
+function radius(k, p) {
+  return Math.sqrt(Math.pow(p[0] - k.cx, 2) + Math.pow(p[1] - k.cy, 2));
+}
+function sweep(k, p) {
+  var a = Math.atan2(p[1] - k.cy, p[0] - k.cx) - DIAL_A0;
+  while (a < -1e-9) a += Math.PI * 2;
+  return a;
+}
+
+function knobsOf(j) {
+  var out = [];
+  for (var i = 3; i + 5 < j.args.length; i += 6) {
+    out.push({ name: String(j.args[i]), label: String(j.args[i + 1]),
+               cx: +j.args[i + 2], cy: +j.args[i + 3],
+               r: +j.args[i + 4], v: +j.args[i + 5] });
+  }
+  return out;
+}
+
+test("every dial wears its stage's ink, and the filled arc is the one that carries it", function () {
+  var seen = 0, total = 0, promoted = 0;
+  eachPatcher(mt.readPatch(PATCH), function (pat) {
+    dialBoxes(pat).forEach(function (d) {
+      total++;
+      var stage = stageOf(pat, d.presentation_rect);
+      // Every dial belongs to a stage, and a stage is what tells it what
+      // colour to be — one that landed outside every panel has nothing to take
+      // its colour from, and would slip past the rest of this test unchecked.
+      assert(stage, d.saved_attribute_attributes.valueof.parameter_longname +
+        " sits inside no stage panel");
+      seen++;
+      var name = d.saved_attribute_attributes.valueof.parameter_longname;
+
+      // Every one of them is set. A dial left half-styled falls back to Max's
+      // factory grey for the rest, which is the look this was meant to end.
+      ["dialcolor", "activedialcolor", "fgdialcolor", "activefgdialcolor",
+       "needlecolor", "activeneedlecolor", "textcolor"].forEach(function (a) {
+        assert(d[a] && d[a].length === 4, name + " leaves " + a + " at Max's default");
+      });
+
+      if (d.activedialcolor[3] === 0) { promoted++; return; }   // drawn instead
+
+      // live.dial's colour roles do not read the way they are named:
+      // dialcolor is the *filled* travel and fgdialcolor the track behind it,
+      // which is how all 570 live.dials in Max's own BEAP and Vizzie packages
+      // are set. Get it backwards and every dial shows its stage's colour as a
+      // full ring that never moves, with the value drawn in grey on top.
+      assert(sameRGB(d.activedialcolor, stage.ink),
+        name + " fills its arc in " + d.activedialcolor.slice(0, 3).join(",") +
+        ", but " + stage.label + " is " + stage.ink.slice(0, 3).join(","));
+      assert(sameRGB(d.dialcolor, stage.ink) && d.dialcolor[3] < d.activedialcolor[3],
+        name + " does not dim to the same ink when it is inactive");
+
+      // the track is neutral and much fainter, so the value is what reads
+      [d.fgdialcolor, d.activefgdialcolor].forEach(function (c) {
+        assert(c[0] === c[1] && c[1] === c[2], name + "'s track is tinted, not neutral");
+        assert(c[3] < d.activedialcolor[3] / 2,
+          name + "'s track is as loud as the value on it");
+      });
+      assert(d.activefgdialcolor[3] > d.fgdialcolor[3],
+        name + "'s track does not dim when the dial is inactive");
+
+      // its own name and readout stay out of the stage's voice, so a line of
+      // dials does not compete with the caption sitting above them
+      assert(sameRGB(d.textcolor, C_NEUTRAL), name + "'s text is not neutral ink");
+      assert(d.activeneedlecolor[3] > d.needlecolor[3],
+        name + "'s needle does not dim when the dial is inactive");
+
+      // live.dial's triangle is click-to-restore, a real affordance — kept,
+      // and painted in the stage's ink like everything else it owns
+      assert(d.triangle !== 0, name + " gives up live.dial's click-to-restore");
+      assert(d.tricolor && sameRGB(d.tricolor, stage.ink),
+        name + "'s triangle is not in its stage's ink");
+      assert(d.tribordercolor === undefined,
+        name + " sets tribordercolor, which Max marks obsolete");
+    });
+  });
+  assert(seen === total && total === 18,
+    "checked " + seen + " of " + total + " dials");
+  assert(promoted > 0, "no stage hands its knobs to a [jsui]");
+});
+
+test("a drawn stage keeps every dial, and leaves it nothing to paint", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var overlays = knobOverlays(patch);
+  assert(overlays.length === 1,
+    "expected one hand-drawn stage, found " + overlays.length);
+  var j = overlays[0];
+  assert(j.where === "wave_window", "the drawn stage sits in " + (j.where || "the rack"));
+
+  var stage = stageOf(wp, j.rect);
+  assert(stage, "the drawn stage is not inside a panel");
+  assert(sameRGB(knobInk(j), stage.ink),
+    "pg-knob.js is handed " + knobInk(j).join(",") + ", but " +
+    stage.label + " is " + stage.ink.slice(0, 3).join(","));
+
+  var covered = dialBoxes(wp).filter(function (d) {
+    return overlaps(j.rect, d.presentation_rect);
+  });
+  var declared = knobsOf(j);
+  assert(covered.length === declared.length && covered.length === 3,
+    "the overlay covers " + covered.length + " dials and draws " + declared.length);
+
+  covered.forEach(function (d) {
+    var v = d.saved_attribute_attributes.valueof;
+    var name = v.parameter_longname;
+
+    // Invisible, but by alpha — never `invisible 1`, which can take the mouse
+    // with it. Only colours change here, and a colour cannot alter hit-testing.
+    assert(d.invisible === undefined, name + " is hidden with `invisible`, not alpha");
+    ["dialcolor", "activedialcolor", "fgdialcolor", "activefgdialcolor",
+     "needlecolor", "activeneedlecolor", "textcolor", "tricolor",
+     "focusbordercolor"].forEach(function (a) {
+      assert(d[a] && d[a][3] === 0, name + " still paints " + a + " under the drawing");
+    });
+    // the text and the triangle are drawn by the script, or not at all — an
+    // invisible triangle would be a hotspot with nothing on top of it
+    assert(d.showname === 0 && d.shownumber === 0 && d.triangle === 0,
+      name + " still draws its own name, readout or triangle");
+
+    // and it is still, in every way Live can see, the control it always was
+    assert(d.parameter_enable === 1, name + " stopped being a Live parameter");
+    assert(v.parameter_initial_enable === 1 && v.parameter_type === 0,
+      name + " lost its parameter setup");
+    var drawn = declared.filter(function (k) { return k.label === name; })[0];
+    assert(drawn, name + " is covered by the overlay but not drawn by it");
+    assert(Math.abs(drawn.v - v.parameter_initial[0]) < 1e-6,
+      name + " opens at " + v.parameter_initial[0] + " but is drawn at " + drawn.v);
+  });
+});
+
+test("a drawn knob lands on the dial under it, and the ring lands inside it", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var j = knobOverlays(patch)[0];
+
+  // every ring pg-mod.js draws, in window coordinates, to check the two
+  // overlays agree about where a knob is — they are drawn by different scripts
+  // from different boxes and have to share a centre, or the modulation ring
+  // floats off the knob it belongs to
+  var rings = {};
+  modOverlays(patch).forEach(function (m) {
+    ringsOf(m).forEach(function (r) {
+      rings[MOD_RINGS[r.name].dial] =
+        { cx: m.rect[0] + r.cx, cy: m.rect[1] + r.cy, r: r.r };
+    });
+  });
+
+  knobsOf(j).forEach(function (k) {
+    var d = dialRect(wp, k.label);
+    var cx = j.rect[0] + k.cx, cy = j.rect[1] + k.cy;
+
+    assert(Math.abs(cx - (d[0] + d[2] / 2)) < 0.5,
+      k.label + "'s knob is off the dial's centre line by " +
+      (cx - (d[0] + d[2] / 2)).toFixed(2) + " px");
+    var up = (cy - d[1]) / d[3];
+    assert(up > 0.3 && up < 0.6,
+      k.label + "'s knob centre sits " + Math.round(up * 100) + "% down its dial");
+
+    // the whole knob inside the dial's box, and inside the jsui, or Max clips
+    assert(cx - k.r >= d[0] && cx + k.r <= d[0] + d[2] &&
+           cy - k.r >= d[1] && cy + k.r <= d[1] + d[3],
+      k.label + "'s knob spills outside its dial");
+    assert(k.cx - k.r >= 0 && k.cy - k.r >= 0 &&
+           k.cx + k.r <= j.rect[2] && k.cy + k.r <= j.rect[3],
+      k.label + "'s knob is clipped by the overlay's own edge");
+
+    var ring = rings[k.label];
+    assert(ring, k.label + " is drawn as a knob but wears no modulation ring");
+    assert(Math.abs(ring.cx - cx) < 0.5 && Math.abs(ring.cy - cy) < 0.5,
+      k.label + "'s ring and its knob do not share a centre");
+    assert(ring.r < k.r,
+      k.label + "'s modulation ring is drawn outside the knob it modulates");
+  });
+});
+
+test("a drawn knob sits over its dials, under the rings, and out of the mouse's way", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var boxes = wp.boxes.map(function (b) { return b.box; });
+  var order = {};
+  boxes.forEach(function (b, i) { order[b.id] = i; });
+
+  var j = knobOverlays(patch)[0];
+  var box = boxes.filter(function (b) { return b.id === j.id; })[0];
+  assert(box.ignoreclick === 1, "the drawn knobs eat the click meant for the dial");
+  assert(box.border === 0, "the drawn knobs draw a border round the stage");
+  assert(box.parameter_enable === 0, "the drawn knobs claim a Live parameter");
+
+  // Box order is front-to-back (m4lkit/patch.py, _ordered_boxes). The drawing
+  // has to be in front of the dials it replaces and behind the modulation
+  // rings, so the amber ring still reads on top of the knob body.
+  boxes.forEach(function (b) {
+    if (b.maxclass !== "live.dial" || !b.presentation_rect) return;
+    if (!overlaps(j.rect, b.presentation_rect)) return;
+    assert(order[j.id] < order[b.id], "the drawn knobs paint behind their own dials");
+  });
+  modOverlays(patch).forEach(function (m) {
+    if (!overlaps(j.rect, m.rect)) return;
+    assert(order[m.id] < order[j.id],
+      "a modulation ring is painted under the knob body and never shows");
+  });
+
+  // and it covers nothing else that answers to a click
+  boxes.forEach(function (b) {
+    if (!b.presentation_rect || b.maxclass === "live.dial") return;
+    var clickable = String(b.maxclass).indexOf("live.") === 0 ||
+                    b.maxclass === "message" ||
+                    (b.maxclass === "jsui" && b.ignoreclick !== 1);
+    if (!clickable) return;
+    assert(!overlaps(j.rect, b.presentation_rect),
+      "the drawn knobs cover a " + b.maxclass + " at " + b.presentation_rect.join(","));
+  });
+});
+
+test("a drawn knob is told what its own dial is doing, and the core still is too", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var j = knobOverlays(patch)[0];
+  var drawn = knobsOf(j);
+
+  var feeds = mt.feeders(wp, j.id);
+  assert(feeds.length === drawn.length,
+    "the overlay draws " + drawn.length + " knobs and is fed by " + feeds.length + " cords");
+
+  drawn.forEach(function (k) {
+    var pre = feeds.filter(function (f) { return f.text === "prepend set " + k.name; })[0];
+    assert(pre, k.name + " reaches the drawing through no [prepend set " + k.name + "]");
+
+    // fed by its own dial's value outlet, not by the core's idea of it: the
+    // drawing and the sound are then the same number by construction
+    var src = mt.feeders(wp, pre.id);
+    assert(src.length === 1 && src[0].maxclass === "live.dial" && src[0].outlet === 0,
+      k.name + "'s [prepend] is fed by " + JSON.stringify(src) + ", not its dial");
+    var d = wp.boxes.filter(function (b) { return b.box.id === src[0].id; })[0].box;
+    assert(d.saved_attribute_attributes.valueof.parameter_longname === k.label,
+      k.name + "'s drawing is fed by the " +
+      d.saved_attribute_attributes.valueof.parameter_longname + " dial");
+
+    // and the same dial still reaches the core, so drawing a control did not
+    // quietly become the only thing it does
+    var toCore = wp.boxes.map(function (b) { return b.box; }).filter(function (b) {
+      return b.text === "prepend " + k.name;
+    });
+    assert(toCore.length === 1, k.name + " no longer reaches the core");
+    assert(mt.feeders(wp, toCore[0].id).some(function (f) { return f.id === d.id; }),
+      k.name + "'s dial no longer feeds the core");
+  });
+});
+
+test("a drawn knob paints its value on live.dial's own sweep", function () {
+  var patch = mt.readPatch(PATCH);
+  var j = knobOverlays(patch)[0];
+  var sb = mt.loadJsui(path.join(DEVICE, "pg-knob.js"),
+                       { width: j.rect[2], height: j.rect[3], args: j.args })();
+
+  // A knob with nothing to report is a hole, not an absence, so unlike a
+  // modulation ring it draws from the first frame — at the value the dial
+  // itself opens at.
+  var moved = { wave: 0.8, pw: 0.0, fold: 1.0 };
+  [null, moved].forEach(function (set) {
+    if (set) Object.keys(set).forEach(function (n) { sb.set(n, set[n]); });
+    var ops = mt.paint(sb);
+
+    knobsOf(j).forEach(function (k) {
+      var v = set ? set[k.name] : k.v;
+
+      // The value arc, picked out by what makes it the value arc: this knob's
+      // own centre, the stage's ink at full strength (the glow behind it is the
+      // same hue, much fainter), and a start at live.dial's own 7-o'clock.
+      var arc = mt.opsColored(ops, knobInk(j)).filter(function (o) {
+        if (o.op !== "stroke" || o.color[3] !== 1) return false;
+        var p0 = o.points[0];
+        return Math.abs(radius(k, p0) - k.r * 0.95) < 0.01 &&
+               Math.abs(sweep(k, p0)) < 1e-6;
+      });
+      assert(arc.length === 1,
+        k.name + " drew " + arc.length + " value arcs at " + v);
+
+      var pts = arc[0].points;
+      assert(Math.abs(sweep(k, pts[pts.length - 1]) - DIAL_SPAN * v) < 1e-6,
+        k.name + "'s arc ends " +
+        (sweep(k, pts[pts.length - 1]) / DIAL_SPAN).toFixed(4) +
+        " of the way round, not " + v);
+      pts.forEach(function (pt) {
+        assert(Math.abs(radius(k, pt) - k.r * 0.95) < 0.01,
+          k.name + "'s arc wanders off its own radius");
+      });
+
+      // the name above and the reading below, both there and both legible
+      var texts = ops.filter(function (o) {
+        return o.op === "text" && Math.abs(o.x - k.cx) < k.r * 1.6;
+      }).map(function (o) { return o.text; });
+      assert(texts.indexOf(k.label) >= 0,
+        k.name + " does not draw its own name; it draws " + texts.join(","));
+      assert(texts.indexOf(v.toFixed(2)) >= 0,
+        k.name + " reads " + texts.join(",") + ", not " + v.toFixed(2));
+    });
+
+    ops.forEach(function (o) {
+      assert(o.x >= -1 && o.y >= -1 && o.x1 <= j.rect[2] + 1 && o.y1 <= j.rect[3] + 1,
+        "the drawn knobs painted outside their box: " +
+        JSON.stringify([o.x, o.y, o.x1, o.y1]));
+    });
+  });
+
+  // and it does not repaint when the dial repeats itself, which live.dial does
+  // all the way through a drag
+  var before = sb.__draw.redraws;
+  sb.set("wave", moved.wave);
+  assert(sb.__draw.redraws === before, "a knob redraws on a value it is already at");
 });
 
 // ----------------------------------------------------------------
