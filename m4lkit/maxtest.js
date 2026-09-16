@@ -321,9 +321,14 @@ function last(sb, outletIdx, selector) {
 }
 
 // every distinct selector the core has emitted, across all outlets
-function emittedSelectors(sb) {
+// Every selector the core has put on an outlet, or — given one — on that outlet
+// alone. The distinction matters wherever a test speaks for a single stream: a
+// display is wired to one outlet and answers for what comes out of it, so a
+// check about that outlet must not be able to pass on another one's traffic.
+function emittedSelectors(sb, outletIdx) {
   var seen = {};
-  sb.__state.out.forEach(function (msgs) {
+  sb.__state.out.forEach(function (msgs, idx) {
+    if (outletIdx !== undefined && idx !== outletIdx) return;
     msgs.forEach(function (m) { if (typeof m[0] === "string") seen[m[0]] = true; });
   });
   return Object.keys(seen);
@@ -414,16 +419,53 @@ function jsuiHandlers(patcher, dir) {
   var names = {};
   jsuiBoxes(patcher).forEach(function (j) {
     if (!j.filename) return;
-    var f = dir ? dir.replace(/\/$/, "") + "/" + j.filename : j.filename;
-    if (!fs.existsSync(f)) throw new Error("jsui script missing: " + f);
-    var src = fs.readFileSync(f, "utf8");
-    var local = {}, m, re = /^\s*([A-Za-z_$][\w$]*)\.local\s*=\s*1/gm;
-    while ((m = re.exec(src))) local[m[1]] = true;
-    re = /^function\s+([A-Za-z_$][\w$]*)\s*\(/gm;
-    while ((m = re.exec(src))) if (!local[m[1]]) names[m[1]] = true;
+    jsHandlers(scriptPath(dir, j.filename)).forEach(function (n) { names[n] = true; });
   });
   return Object.keys(names);
 }
+
+// The message names one script answers to, on its own. Same rule as above: a
+// top-level function is a handler unless the script marks it `f.local = 1`.
+function jsHandlers(srcPath) {
+  if (!fs.existsSync(srcPath)) throw new Error("js script missing: " + srcPath);
+  var src = fs.readFileSync(srcPath, "utf8");
+  var names = [], local = {}, m, re = /^\s*([A-Za-z_$][\w$]*)\.local\s*=\s*1/gm;
+  while ((m = re.exec(src))) local[m[1]] = true;
+  re = /^function\s+([A-Za-z_$][\w$]*)\s*\(/gm;
+  while ((m = re.exec(src))) if (!local[m[1]]) names.push(m[1]);
+  return names;
+}
+
+function scriptPath(dir, filename) {
+  return dir ? dir.replace(/\/$/, "") + "/" + filename : filename;
+}
+
+// The globals a Max js or jsui script is born with that are *callable*. This is
+// the sharp edge behind anything(): Max dispatches an incoming selector by
+// looking the name up among the script's globals, so a selector that matches
+// one of these is not an unhandled message at all — it runs Max's own function
+// and never reaches anything(). Sending `post 1.4` prints 1.4 to the Max
+// window; `outlet 1 2` would fire a real outlet. A script fed a stream it does
+// not fully route has to claim every name on this list that the stream can
+// carry, and a test is the only thing that notices when the stream grows one.
+//
+// Only the callable ones are listed. Names Max calls *on* a script — bang,
+// list, msg_int, msg_float, anything, loadbang, paint, getvalueof — are not
+// globals it inherits, so they collide with nothing.
+var MAX_JS_GLOBALS = [
+  // Max's own
+  "post", "error", "cpost", "messnamed", "sendnamed", "arrayfromargs", "outlet",
+  "notifyclients", "setinletassist", "setoutletassist", "declareattribute",
+  "embedmessage", "include",
+  // Max's constructors
+  "Task", "File", "Folder", "Dict", "Buffer", "Global", "LiveAPI", "Patcher",
+  "Maxobj", "MaxobjListener", "SQLite", "Image", "Wind", "Sketch", "MGraphics",
+  // and the ECMAScript ones, which are globals here like anywhere else
+  "Object", "Array", "String", "Number", "Boolean", "Function", "Date", "RegExp",
+  "Error", "Math", "JSON", "eval", "parseInt", "parseFloat", "isNaN", "isFinite",
+  "escape", "unescape", "encodeURI", "decodeURI", "encodeURIComponent",
+  "decodeURIComponent"
+];
 
 // Every [jsui] box in the patch, subpatchers included: its script, its creation
 // arguments, its presentation rect and the patcher it sits in — so a test can
@@ -496,6 +538,7 @@ module.exports = {
   call: call, callArgs: callArgs, evalIn: evalIn, hasHandler: hasHandler, tick: tick,
   collect: collect, collectTimed: collectTimed, last: last, emittedSelectors: emittedSelectors,
   readPatch: readPatch, routedSelectors: routedSelectors, patchControls: patchControls,
-  jsuiHandlers: jsuiHandlers, jsuiBoxes: jsuiBoxes, feeders: feeders,
+  jsuiHandlers: jsuiHandlers, jsHandlers: jsHandlers, jsuiBoxes: jsuiBoxes,
+  MAX_JS_GLOBALS: MAX_JS_GLOBALS, feeders: feeders,
   runner: runner
 };

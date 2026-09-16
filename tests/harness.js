@@ -1877,20 +1877,11 @@ test("sandboxes with the same seed play identical note streams", function () {
 
 // ---------------------------------------------------------------- core <-> patch contract
 
-// The core and the patch are built separately, so nothing but this test stops a
-// new outlet(0, "…") in pg-core.js from landing on an unrouted [route] outlet
-// and silently doing nothing inside Live.
-test("every selector the core emits is routed in the built device", function () {
-  var patch = mt.readPatch(PATCH);
-  var routed = mt.routedSelectors(patch);
-  assert(routed.routes >= 3, "expected the synth/note/display routes, found " + routed.routes);
-
-  // The phrase outlet skips [route] — it goes straight to the lane's jsui,
-  // because route strips the selector it matches and the lane needs those
-  // names. So the jsui's handlers consume selectors just as a route does.
-  var consumed = routed.selectors.concat(mt.jsuiHandlers(patch, DEVICE));
-
-  // exercise everything that emits: startup, every macro, every button
+// A core driven until it has said everything it knows how to say: startup,
+// every macro, every menu, every button, and enough clock to get a phrase and
+// a reroll out of it. Two tests read the same run, so what counts as "emits"
+// is one list to extend rather than two to keep in step.
+function exerciseEverything() {
   var sb = makeSandbox();
   call(sb, "pushall");
   ["novelty", "density", "interlock", "chunk", "squelch", "drive", "cutoff",
@@ -1905,7 +1896,23 @@ test("every selector the core emits is routed in the built device", function () 
     .forEach(function (b) { call(sb, b); });
   tickSteps(sb, 64);
   call(sb, "dump");
+  return sb;
+}
 
+// The core and the patch are built separately, so nothing but this test stops a
+// new outlet(0, "…") in pg-core.js from landing on an unrouted [route] outlet
+// and silently doing nothing inside Live.
+test("every selector the core emits is routed in the built device", function () {
+  var patch = mt.readPatch(PATCH);
+  var routed = mt.routedSelectors(patch);
+  assert(routed.routes >= 3, "expected the synth/note/display routes, found " + routed.routes);
+
+  // The phrase outlet skips [route] — it goes straight to the lane's jsui,
+  // because route strips the selector it matches and the lane needs those
+  // names. So the jsui's handlers consume selectors just as a route does.
+  var consumed = routed.selectors.concat(mt.jsuiHandlers(patch, DEVICE));
+
+  var sb = exerciseEverything();
   var emitted = mt.emittedSelectors(sb);
   emitted.forEach(function (sel) {
     assert(consumed.indexOf(sel) >= 0,
@@ -1917,6 +1924,82 @@ test("every selector the core emits is routed in the built device", function () 
   routed.selectors.forEach(function (sel) {
     assert(emitted.indexOf(sel) >= 0, "the patch routes \"" + sel + "\" but the core never emits it");
   });
+});
+
+// Max numbers a subpatcher's inlets left to right, by where the [inlet] boxes
+// sit in the patching view — not by the order the builder created them. A test
+// that wants to know which cord in the parent feeds a given inlet has to sort
+// them the same way Max does.
+function inletOrder(pat, id) {
+  var ins = pat.boxes.filter(function (b) { return b.box.maxclass === "inlet"; })
+    .map(function (b) { return b.box; })
+    .sort(function (a, b) { return a.patching_rect[0] - b.patching_rect[0]; });
+  for (var i = 0; i < ins.length; i++) if (ins[i].id === id) return i;
+  return -1;
+}
+
+// the box holding this patcher, and the patcher holding that box
+function hostOf(root, pat) {
+  var found = null;
+  (function walk(p) {
+    p.boxes.forEach(function (b) {
+      if (b.box.patcher === pat) found = { id: b.box.id, pat: p };
+      else if (b.box.patcher) walk(b.box.patcher);
+    });
+  })(root);
+  return found;
+}
+
+// Which of the core's outlets a display really hears, followed cord by cord. A
+// jsui inside a window is fed by a local [inlet], so the walk carries on one
+// patcher up: the inlet's place among its siblings is the inlet number on the
+// subpatcher box, and that is the cord to pick up next.
+function coreOutletsFeeding(root, pat, boxId, inletIdx) {
+  var out = {};
+  mt.feeders(pat, boxId).forEach(function (f) {
+    if (inletIdx !== undefined && f.inlet !== inletIdx) return;
+    if (f.text === "js pg-core.js") { out[f.outlet] = 1; return; }
+    if (f.maxclass !== "inlet") return;
+    var host = hostOf(root, pat);
+    if (!host) return;
+    coreOutletsFeeding(root, host.pat, host.id, inletOrder(pat, f.id))
+      .forEach(function (n) { out[n] = 1; });
+  });
+  return Object.keys(out).map(Number);
+}
+
+// anything() is not the whole of Max's dispatch. A selector is resolved against
+// the script's globals first, and a js script's globals are not only its own —
+// Max's are already there (m4lkit/maxtest.js, MAX_JS_GLOBALS). A selector that
+// matches one of those never reaches anything(): it runs Max's function. The
+// core's "post" is exactly that collision — the post-filter drive on the synth
+// outlet, and also Max's printer — and nothing shows it going wrong except
+// numbers appearing in the Max window, which no test can see. So the rule is
+// checked at the source: every script fed one of the core's outlets whole has
+// to claim, by name, each selector on it that Max already owns.
+test("no selector reaches a display by way of a Max built-in", function () {
+  var scripts = 0;
+  [PATCH, MIDI_PATCH].forEach(function (file) {
+    var patch = mt.readPatch(file);
+    var sb = exerciseEverything();
+    mt.jsuiBoxes(patch).forEach(function (j) {
+      var outs = coreOutletsFeeding(patch, j.patcher, j.id);
+      assert(outs.length > 0,
+        j.filename + " in " + path.basename(file) + " is fed by no core outlet");
+      var claimed = mt.jsHandlers(path.join(DEVICE, j.filename));
+      scripts++;
+      outs.forEach(function (n) {
+        mt.emittedSelectors(sb, n).forEach(function (sel) {
+          if (mt.MAX_JS_GLOBALS.indexOf(sel) < 0) return;
+          assert(claimed.indexOf(sel) >= 0,
+            j.filename + " is fed \"" + sel + "\" on the core's outlet " + n +
+            ", and " + sel + " is one of Max's own globals: anything() never sees it, " +
+            "Max's " + sel + "() runs instead. Give the script a handler of that name.");
+        });
+      });
+    });
+  });
+  assert(scripts > 0, "no jsui was reached by the walk up from the core's outlets");
 });
 
 // the other half of the same contract: every control in the patch has to reach

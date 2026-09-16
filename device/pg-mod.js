@@ -98,6 +98,17 @@ function subdrv(v)  { set("subdrv", (v - 0.6) / 2.6); }
 // — there is nothing here to do.
 function anything() {}
 
+// ...except one name anything() can never be asked about. Max resolves an
+// incoming selector against this script's globals, and a jsui starts with
+// Max's own already there — post() among them. The core sends
+// outlet(0, "post", ...) for the post-filter drive, so left unclaimed that
+// selector would not fall through to anything(): it would call Max's post()
+// and print a number to the Max window on every repush. Claiming the name
+// costs this script post() as a debugging tool — cpost() still reaches the
+// system console — and tests/harness.js holds the whole class of collision
+// shut, so a new selector on this outlet cannot quietly find another one.
+function post() {}
+
 function set(name, v) {
   var ring = byName[name];
   if (!ring) return;
