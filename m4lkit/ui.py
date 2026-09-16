@@ -28,6 +28,26 @@ def dial_attrs(longname, initial, shortname=None):
     }
 
 
+# Where live.dial puts its knob inside its box, measured off the device's own
+# screenshot (docs/cover-device-ui.png, 48 x 56 dials): the knob is a circle
+# centred across the width, hung under a fixed-height name label with the value
+# readout below it — centre (24.0, 24.9), radius 12.06. A width-driven radius
+# (w/4) and a height-driven one (whatever the two text bands leave) both land on
+# that, and one screenshot cannot separate them; taking the smaller keeps a ring
+# drawn over the knob inside the knob whichever one Max is really using.
+DIAL_NAME_H = 12.9     # the parameter name, above the knob
+DIAL_VALUE_H = 19.0    # the value readout, below it
+
+
+def dial_knob(rect):
+    """live.dial's knob within its presentation rect, as (cx, cy, radius) in
+    the same coordinates. Anything drawn on top of a dial has to agree with
+    this or it rings empty space."""
+    x, y, w, h = rect
+    r = min(w / 4.0, (h - DIAL_NAME_H - DIAL_VALUE_H) / 2.0)
+    return x + w / 2.0, y + DIAL_NAME_H + r, r
+
+
 def menu_attrs(longname, items, initial_idx):
     return {
         "varname": longname.lower(),
@@ -69,6 +89,7 @@ class Row:
         self.x, self.gap = x, gap
         self.sources = []
         self.button_keys = []
+        self.dial_rects = {}   # js message -> that dial's presentation rect
 
     def _section(self, label, ramp, span):
         section(self.p, label.replace(" ", "_"), label.upper(), ramp,
@@ -79,12 +100,91 @@ class Row:
         span = (len(dials) - 1) * pitch + w
         self._section(label, ramp, span)
         for i, (name, init, msg) in enumerate(dials):
-            key = "ui_" + msg
-            self.p.box(key, "live.dial", pres=[self.x + i * pitch, self.y, w, self.h],
+            key, rect = "ui_" + msg, [self.x + i * pitch, self.y, w, self.h]
+            self.p.box(key, "live.dial", pres=rect,
                        extra=dial_attrs(name, init), numinlets=1, numoutlets=2,
                        outlettype=["", "float"])
             self.sources.append((key, msg))
+            self.dial_rects[msg] = rect
         self.x += span + self.gap
+
+    def stage(self, label, ramp, dials, menus=(), pitch=50.0, w=48.0,
+              menu_h=18.0, menu_gap=4.0):
+        """One stage of a signal path under a single caption: its dials on a
+        line, the menus belonging to the same stage on a line beneath.
+
+        A dial entry may carry a fourth element giving that one dial a larger
+        diameter — how a group's meta control leads it, drawn bigger than the
+        per-stage dials beside it. Dials share a bottom edge, so their name
+        labels stay on one baseline whatever the knob size, and the gutter
+        (pitch - w) is constant, so a promoted dial pushes the rest of the
+        stage along instead of overlapping it. `y`/`h` describe an ordinary
+        dial; a promoted one grows upward from the shared bottom, so leave it
+        room between `panel_top` and `y`.
+
+        dials: (parameter longname, initial 0-1, js message[, diameter])
+        menus: (parameter longname, items, initial index, js message, width)
+        """
+        gutter = pitch - w
+        sizes = [d[3] if len(d) > 3 else w for d in dials]
+        span = sum(sizes) + gutter * (len(sizes) - 1)
+        if menus:
+            span = max(span, sum(m[4] for m in menus) + menu_gap * (len(menus) - 1))
+        self._section(label, ramp, span)
+
+        x = self.x
+        for (name, init, msg), dw in zip([d[:3] for d in dials], sizes):
+            dh = self.h * dw / w
+            key, rect = "ui_" + msg, [x, self.y + self.h - dh, dw, dh]
+            self.p.box(key, "live.dial", pres=rect,
+                       extra=dial_attrs(name, init), numinlets=1, numoutlets=2,
+                       outlettype=["", "float"])
+            self.sources.append((key, msg))
+            self.dial_rects[msg] = rect
+            x += dw + gutter
+
+        x = self.x
+        for name, items, init, msg, mw in menus:
+            key = "ui_" + msg
+            self.p.box(key, "live.menu",
+                       pres=[x, self.y + self.h + menu_gap, mw, menu_h],
+                       extra=menu_attrs(name, items, init),
+                       numinlets=1, numoutlets=3, outlettype=["", "", "float"])
+            self.sources.append((key, msg))
+            x += mw + menu_gap
+        self.x += span + self.gap
+
+    def overlay(self, key, filename, rings, scale=0.72):
+        """A [jsui] laid over dials this row already drew, so a script can put a
+        second reading on a live.dial — which cannot draw one itself.
+
+        rings: (ring name, js message). The message names a dial on this row;
+        the name is what the script calls that ring. Each ring's centre and
+        radius reach the script as creation arguments in the overlay's own
+        coordinates — `<name> <cx> <cy> <r>`, four per ring — so live.dial's
+        geometry is worked out in one place (dial_knob) instead of being agreed
+        on twice. `scale` sets the ring inside the knob, as a fraction of it.
+
+        The box spans exactly the dials it rings and is `ignoreclick`, so the
+        dials underneath still take the mouse; it goes in front of everything
+        (see Patch.box) because it is laid out after the controls it covers.
+        """
+        rects = [self.dial_rects[msg] for _, msg in rings]
+        x0 = min(r[0] for r in rects)
+        y0 = min(r[1] for r in rects)
+        x1 = max(r[0] + r[2] for r in rects)
+        y1 = max(r[1] + r[3] for r in rects)
+
+        args = []
+        for (name, msg), rect in zip(rings, rects):
+            cx, cy, r = dial_knob(rect)
+            args += [name, round(cx - x0, 2), round(cy - y0, 2), round(r * scale, 2)]
+
+        self.p.box(key, "jsui", pres=[x0, y0, x1 - x0, y1 - y0],
+                   extra={"filename": filename, "jsarguments": args,
+                          "border": 0, "parameter_enable": 0, "ignoreclick": 1},
+                   numinlets=1, numoutlets=1, front=True)
+        return key
 
     def menus(self, label, ramp, menus, gap=4.0):
         """menus: (parameter longname, items, initial index, js message, width)"""

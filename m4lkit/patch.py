@@ -33,7 +33,10 @@ class Patch:
         return rect
 
     def box(self, key, maxclass, text=None, pres=None, extra=None,
-            numinlets=1, numoutlets=1, outlettype=None):
+            numinlets=1, numoutlets=1, outlettype=None, front=False):
+        """`front=True` puts the box in front of everything already built
+        instead of behind it (see _ordered_boxes) — for an overlay that has to
+        be laid out after the controls it draws on top of."""
         assert key not in self.ids, f"duplicate box key: {key}"
         self.counter += 1
         oid = f"obj-{self.counter}"
@@ -58,7 +61,10 @@ class Patch:
         if valueof:
             self.params.append((oid, valueof["parameter_longname"],
                                 valueof["parameter_shortname"]))
-        self.boxes.append({"box": b})
+        if front:
+            self.boxes.insert(0, {"box": b})
+        else:
+            self.boxes.append({"box": b})
         return key
 
     def sig(self, key, text, numinlets, pres=None, extra=None, numoutlets=1):
@@ -88,13 +94,25 @@ class Patch:
         169px rack cap, since that cap (`openrect` in to_dict()) only applies
         to the top-level device patcher, not to a nested subpatcher's own
         `rect`. Give it a `varname` (scripting name) so a [pcontrol @target
-        <varname>] elsewhere in this patch can open/front/close it."""
+        <varname>] elsewhere in this patch can open/front/close it.
+
+        Any Live parameters inside `inner` are lifted into this patcher's
+        parameter map under their `oid::oid` nested addresses, so the device
+        keeps a full parameter list and Push bank layout."""
         assert key not in self.ids, f"duplicate box key: {key}"
         self.counter += 1
         oid = f"obj-{self.counter}"
         self.ids[key] = oid
 
         validate(inner)
+        # Live addresses a nested parameter as "<subpatcher oid>::<its own oid>".
+        # Lifting them into this patcher's map is what keeps the device-level
+        # parameter list — and the Push banks built from it — non-empty when the
+        # controls live in a subpatcher window rather than the rack. Recursive by
+        # construction: a doubly-nested control arrives already prefixed once.
+        for inner_oid, longname, shortname in inner.params:
+            self.params.append((f"{oid}::{inner_oid}", longname, shortname))
+
         inner_patcher = inner.to_dict()["patcher"]
         inner_patcher.pop("project", None)
         inner_patcher.pop("openrect", None)
@@ -134,7 +152,9 @@ class Patch:
         """Max draws `boxes` front-to-back: index 0 is frontmost, the last entry
         sits at the very back. Panels are backdrops, so they go last — earliest
         created deepest, since a full-window backdrop is built before the
-        section panels that sit on it."""
+        section panels that sit on it. Everything else keeps build order, so a
+        box built later sits *behind* one built earlier; box(front=True) is how
+        a box built last still lands on top."""
         panels = [b for b in self.boxes if b["box"]["maxclass"] == "panel"]
         rest = [b for b in self.boxes if b["box"]["maxclass"] != "panel"]
         return rest + panels[::-1]

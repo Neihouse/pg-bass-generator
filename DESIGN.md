@@ -317,7 +317,7 @@ Sound { wave, pw, fold, wobrate, wobdepth, subsat }   // each 0–1
 played = clamp(dial + design × (phrase value − reference), 0, 1)
 ```
 
-Each reference is that dial's default, so **design 0** plays the dials exactly, and **design 1 with the dials at default** plays each phrase's own sound. Anywhere between, the dial sets the centre and the phrase moves around it. Default design is 0.5.
+Each reference is that dial's default, so **design 0** plays the dials exactly, and **design 1 with the dials at default** plays each phrase's own sound. Anywhere between, the dial sets the centre and the phrase moves around it. Default design is 0.5. Because the dial keeps showing what the user set while the phrase plays something else, each of the six wears a second ring showing the value actually reaching the synth (§ 5.5).
 
 **Evolution.** A mutation (§ 1.1) moves the sound only when the timbre allocation of the novelty budget (§ 4.3) spends. Otherwise the lineage keeps its sound, even through a high mutation that regenerates the notes. When the budget spends, the mutation pulls a few randomly picked parameters part of the way toward a fresh draw from the current groove. Pulling toward a draw, rather than stepping by a random amount, is mean-reverting: a lineage wanders around its groove's sound instead of random-walking to the edges, and drifts across after a groove change.
 
@@ -480,6 +480,107 @@ Deliberate re-grounding — essential for live use:
 
 ---
 
+## 5.4 Seeing the phrase (step lane)
+
+Everything in §1 and §4 changes the phrase faster than two bars of audio can
+report it. **Mutate** moves one layer; a layer reroll replaces one outright;
+the novelty budget drifts the rest continuously. Heard alone, all three sound
+like "something changed" — which is not enough to decide whether to keep it.
+
+So the core publishes the phrase as well as playing it, on its own outlet:
+
+```
+phrase <name> <bars> <steps> <root> <groove> <mode> <contour>
+steps  <flags> <pitch> <vel> <gate> <prob> <timbre> <wet> <micro>  × steps
+```
+
+`flags` is a bitmask — 1 onset, 2 accent, 4 slide. `steps` lands last and is
+the redraw trigger, so a display can never show a header from one phrase over a
+grid from another. Both are pushed only when the phrase itself changes: turning
+a dial re-voices the sound (§5.2) without rewriting the notes, and must not
+cost a redraw.
+
+The display is a read of that message, not a second copy of the generator. It
+draws five of the eight lanes as themselves — onset as position, pitch as
+height against a tonic guide line, accent as colour and weight, gate as width,
+microtiming as horizontal offset — and joins each slide to the note it glides
+into, so direction reads. `prob`, `timbre` and `wet` ride along in the same
+message for a later pass.
+
+**Where it lives.** The lane is the device's face in Live's 169 px rack, in the
+strip the waveform scope used to fill. The waveform reports the sound, which
+the sound-design window still shows in full, under the lane and above the
+signal chain that shapes it;
+the notes are what Mutate and the layer rerolls actually change, and what the
+decision to keep a phrase turns on. So the scope moves to the window and the
+lane takes the rack, appearing in both — the strip for the glance, the
+full-width lane for the judgement.
+
+One script draws both views and a creation argument picks which:
+`jsui pg-lane.js rack`, `jsui pg-lane.js window`. The rack view drops the
+identity line, because the status display one row above it already names the
+phrase, its groove, its length, its contour and its mode. The counts that line
+also carried — notes, accents, slides, root — move down onto the bar ruler,
+where nothing else was using the space, and the 20 px go to pitch.
+
+The MIDI-effect build gets the rack view too. It has no audio to scope, so the
+lane is the only display it could carry — and the build whose entire output is
+notes is the one where seeing them matters most.
+
+## 5.5 Showing what the phrase moved (mod rings)
+
+Design (§ 2.8) is why a reroll changes the *sound* and not only the notes: the
+phrase carries six sound values of its own and they push the dials, so at
+design 1 the dial is the centre they move around rather than the value that
+plays. Heard, that is the best thing in the device. Seen, it was a fault. The
+knob sits still while what it controls moves under it, and nothing on screen
+admits that the number printed below the dial is not the number being played.
+
+Serum and Vital settled the shape of this years ago: leave the set value where
+the user put it and draw the *played* value as a second ring on the same
+control, so one knob carries both readings. That is the amber ring. A dial with
+no ring plays as set. A ring sitting on the pointer is the phrase asking for
+what is already there. A ring walked away from the pointer is the phrase
+pushing, and how far round is how hard.
+
+**Which dials wear one.** The six of § 2.8 — Wave, PWM, Fold, WobRate, WobDepth
+and SubSat — and no others. Every other control on either page reaches the core
+as the value it shows and stays there; nothing in the core ever writes a dial
+back. A ring on a control nothing modulates would be a second pointer repeating
+the first.
+
+**The ring reads the sound, not the formula.** Its values come off the core's
+synth outlet — the stream that drives the oscillators — rather than from a copy
+of § 2.8's arithmetic living in the display. They arrive scaled for DSP: wobble
+rate and its cutoff in Hz, sub drive as a gain. So `device/pg-mod.js` inverts
+that scaling to land back in the dial's own 0–1, six exact inverses and nothing
+else. What this buys is that the ring cannot drift away from the sound when
+§ 2.8 changes, because it never knew § 2.8 in the first place; the only thing
+it has to keep in step with is `pushSynth`'s scaling, which a test pins by
+driving the real core and checking every ring against `soundNow()`. Two of the
+six drive a pair of selectors each — WobDepth sets the wobble's cutoff and its
+pitch, SubSat the sub's drive and its make-up gain — and either of a pair
+recovers the dial, so the script reads one and ignores the other.
+
+**Drawn on the dial, not beside it.** `live.dial` has no second reading to
+offer, so a click-through `[jsui]` lies over the dials and draws the rings on
+top of them. One overlay per row, spanning only from its first ringed dial to
+its last, so neither ever reaches a menu or a button — and `ignoreclick` behind
+that, so the dials underneath still take the mouse. The ring traces
+`live.dial`'s own sweep, 270° from the lower left with the gap at the bottom,
+at 0.72 of the knob's radius, inside the pointer rather than across it, over a
+faint full-travel track that gives the arc a scale to be read against. Amber
+because it is the one colour in the window that no stage owns, so a ring is
+never mistaken for part of the section it sits in. Where the knob sits inside
+its box is measured once, in `m4lkit/ui.py`, and handed to the script as
+creation arguments — geometry agreed in one place instead of twice.
+
+Nothing is drawn until the core has spoken. At **design 0** every ring lands
+exactly on its own dial's pointer, and the display degrades to "nothing is
+being pushed" — which at design 0 is the truth.
+
+---
+
 # 6. Meta controls
 
 | Control | Maps to |
@@ -520,7 +621,13 @@ GENERATIVE CORE          SYNTH CORE               WET CORE              META CON
 - **Synth core**: `gen~` for the nonlinear filter + saturation stages (the couplings in § 2.3 want sample-level control); standard MSP for oscillators and envelopes is fine.
 - **Voice model**: mono, last-note priority; slide flag → glide without envelope retrigger.
 - **State/presets**: `pattr` + Live parameter system; all meta controls as `live.*` objects so they automate and map to Push.
-- **UI**: meta controls (§ 6) front and center; per-layer generative controls in an expandable advanced panel.
+- **UI**: meta controls (§ 6) front and center; per-layer generative controls in an expandable advanced panel. Built as two pages of one floating window:
+  a sound page in signal order — OSC / SUB / FILTER / SHAPE / SPACE — where the
+  four sound meta controls (Squelch, Chunk, Wet, Design) lead their stage drawn
+  larger than the dials they scale, and a Compose page holding what decides the
+  notes rather than the tone. Every control stays a `live.*` object addressed as
+  `<subpatcher>::<id>`, so nesting them costs the device neither its automation
+  map nor its Push banks.
 
 # 9. Milestones
 

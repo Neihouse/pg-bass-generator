@@ -9,10 +9,13 @@
 var path = require("path");
 var mt = require("../m4lkit/maxtest");
 
-var CORE = path.join(__dirname, "..", "device", "pg-core.js");
-var PATCH = path.join(__dirname, "..", "device", "PG Bass Generator.maxpat");
+var DEVICE = path.join(__dirname, "..", "device");
+var CORE = path.join(DEVICE, "pg-core.js");
+var LANE = path.join(DEVICE, "pg-lane.js");
+var PATCH = path.join(DEVICE, "PG Bass Generator.maxpat");
+var MIDI_PATCH = path.join(DEVICE, "PG Bass Generator MIDI.maxpat");
 
-var makeSandbox = mt.loadCore(CORE, { outlets: 3 });   // 0 synth, 1 note, 2 display
+var makeSandbox = mt.loadCore(CORE, { outlets: 4 });   // 0 synth, 1 note, 2 display, 3 phrase
 var call = mt.call, callArgs = mt.callArgs, tickSteps = mt.tick;
 var collect = mt.collect, collectTimed = mt.collectTimed;
 
@@ -32,6 +35,51 @@ function lastState(sb) {
 
 // §2.8 the phrase sound parameters, in the order the saved state stores them
 var SOUND_KEYS = ["wave", "pw", "fold", "wobrate", "wobdepth", "subsat"];
+
+// outlet 3: the phrase as the lane display will read it. "steps" carries one
+// flat list of 8 numbers per step, which Max flattens the same way as "state".
+var LANES = ["flags", "pitch", "vel", "gate", "prob", "timbre", "wet", "micro"];
+function lastPhrase(sb) {
+  var h = mt.last(sb, 3, "phrase"), flat = mt.last(sb, 3, "steps")[1];
+  var n = h[3], lane = {};
+  LANES.forEach(function (k) { lane[k] = []; });
+  for (var s = 0; s < n; s++) {
+    for (var k = 0; k < LANES.length; k++) lane[LANES[k]].push(flat[s * LANES.length + k]);
+  }
+  return { name: h[1], bars: h[2], steps: n, root: h[4],
+           groove: h[5], mode: h[6], contour: h[7], lane: lane, flat: flat };
+}
+function r3(v) { return Math.round((v || 0) * 1000) / 1000; }
+
+// device/pg-lane.js drawing the phrase above, run headless: a jsui sandbox fed
+// the same two messages Max would deliver, painted, and handed back as the list
+// of primitives it drew. Two boxes load the script and each gets its built
+// size and creation argument: the hero lane in the sound-design window, and
+// the rack strip that fills what Live's 169 px leave under the title row.
+var LANE_W = 944, LANE_H = 152;
+var RACK_W = 952, RACK_H = 138;
+var makeLane = mt.loadJsui(LANE, { width: LANE_W, height: LANE_H, args: ["window"] });
+var makeRack = mt.loadJsui(LANE, { width: RACK_W, height: RACK_H, args: ["rack"] });
+function drawPhrase(sb, make) {
+  var h = mt.last(sb, 3, "phrase"), lane = (make || makeLane)();
+  callArgs(lane, "phrase", h.slice(1));
+  callArgs(lane, "steps", mt.last(sb, 3, "steps")[1]);
+  return { ops: mt.paint(lane), sb: lane };
+}
+function laneTexts(ops) {
+  return ops.filter(function (o) { return o.op === "text"; })
+            .map(function (o) { return o.text; }).join("  ");
+}
+// the lane's own note colours, from the top of pg-lane.js
+var C_NOTE = [0.059, 0.314, 0.267], C_ACCENT = [0.980, 0.780, 0.459],
+    C_SLIDE = [0.961, 0.769, 0.702];
+// a note body is a filled rectangle in one of the two note colours
+function noteBodies(ops) {
+  return ops.filter(function (o) {
+    return o.op === "fill" && o.points.length === 4 &&
+           (mt.opsColored([o], C_NOTE).length || mt.opsColored([o], C_ACCENT).length);
+  });
+}
 
 // ---------------------------------------------------------------- tests
 
@@ -564,7 +612,7 @@ test("register distribution: root-dominant, sub always 32.7-61.7 Hz", function (
   for (var g = 0; g < 7; g++) {
     // a seed per groove: sandboxes on one seed drop the same steps, so pooling
     // them would count one draw seven times and double the spread of the shares
-    var sb = mt.loadCore(CORE, { outlets: 3, seed: g + 1 })();
+    var sb = mt.loadCore(CORE, { outlets: 4, seed: g + 1 })();
     call(sb, "groove", g);
     for (var m = 0; m < 6; m++) call(sb, "Mutate");
     tickSteps(sb, 64);
@@ -1503,6 +1551,307 @@ test("captured note events reproduce the phrase in beats", function () {
   }
 });
 
+// ---------------------------------------------------------------- phrase view (outlet 3)
+
+// The lane display is only as honest as this outlet, so it is checked against
+// dump() — the same phrase, read straight off the generator.
+test("the phrase outlet emits every step, matching the generator", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  call(sb, "dump");
+  var v = lastPhrase(sb), d = lastDump(sb).phrase;
+
+  assert(v.name === d.name, "lane name " + v.name + " != dump name " + d.name);
+  assert(v.bars === d.bars, "lane bars " + v.bars + " != dump bars " + d.bars);
+  assert(v.contour === d.contour, "lane contour " + v.contour + " != " + d.contour);
+  assert(v.steps === d.onsets.length,
+    "lane has " + v.steps + " steps, phrase has " + d.onsets.length);
+  assert(v.steps === v.bars * 16, "steps should be 16/bar, got " + v.steps);
+  assert(v.flat.length === v.steps * LANES.length,
+    "expected " + v.steps * LANES.length + " numbers, got " + v.flat.length);
+
+  for (var s = 0; s < v.steps; s++) {
+    var f = v.lane.flags[s];
+    assert((f & 1 ? 1 : 0) === (d.onsets[s] ? 1 : 0), "onset mismatch at step " + s);
+    assert((f & 2 ? 1 : 0) === (d.accents[s] ? 1 : 0), "accent mismatch at step " + s);
+    assert((f & 4 ? 1 : 0) === (d.slides[s] ? 1 : 0), "slide mismatch at step " + s);
+    assert(v.lane.pitch[s] === (d.pitches[s] || 0), "pitch mismatch at step " + s);
+    assert(v.lane.vel[s] === (d.vels[s] || 0), "velocity mismatch at step " + s);
+    assert(v.lane.gate[s] === r3(d.gates[s]), "gate mismatch at step " + s);
+    assert(v.lane.prob[s] === r3(d.probs[s]), "prob mismatch at step " + s);
+    assert(v.lane.timbre[s] === r3(d.timbres[s]), "timbre mismatch at step " + s);
+    assert(v.lane.wet[s] === r3(d.wets[s]), "wet mismatch at step " + s);
+    assert(v.lane.micro[s] === r3(d.micros[s]), "micro mismatch at step " + s);
+  }
+});
+
+// §5.3 the point of the lane: a layer reroll has to be visible, and has to
+// leave the layers it did not touch alone.
+test("a layer reroll re-emits the phrase with only that layer moved", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var before = lastPhrase(sb);
+
+  call(sb, "Accent");
+  var after = lastPhrase(sb);
+  assert(after.flat !== before.flat, "Accent did not re-emit the phrase");
+
+  var onsetsMoved = 0, accentsMoved = 0, pitchesMoved = 0;
+  for (var s = 0; s < before.steps; s++) {
+    if ((before.lane.flags[s] & 1) !== (after.lane.flags[s] & 1)) onsetsMoved++;
+    if ((before.lane.flags[s] & 2) !== (after.lane.flags[s] & 2)) accentsMoved++;
+    if (before.lane.pitch[s] !== after.lane.pitch[s]) pitchesMoved++;
+  }
+  assert(onsetsMoved === 0, "Accent moved " + onsetsMoved + " onsets");
+  assert(pitchesMoved === 0, "Accent moved " + pitchesMoved + " pitches");
+  assert(accentsMoved > 0, "Accent changed nothing the lane can show");
+
+  // Rhythm is allowed to move onsets, and has to
+  call(sb, "Rhythm");
+  var rh = lastPhrase(sb), rhythmMoved = 0;
+  for (s = 0; s < before.steps; s++) {
+    if ((after.lane.flags[s] & 1) !== (rh.lane.flags[s] & 1)) rhythmMoved++;
+  }
+  assert(rhythmMoved > 0, "Rhythm changed nothing the lane can show");
+});
+
+// root() transposes the phrase in place and never touches the status line, so
+// it is the one phrase change that does not ride updateDisplay()
+test("transposing the root moves the lane pitches with it", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var before = lastPhrase(sb);
+  call(sb, "root", 5);                       // root is a semitone index, 0 = C1
+  var after = lastPhrase(sb);
+
+  var delta = 36 + 5 - before.root;
+  assert(delta !== 0, "the phrase already sat on that root — nothing to transpose");
+  assert(after.root === before.root + delta, "lane root did not follow: " + after.root);
+  var checked = 0;
+  for (var s = 0; s < before.steps; s++) {
+    if (!(before.lane.flags[s] & 1)) continue;
+    assert(after.lane.pitch[s] === before.lane.pitch[s] + delta,
+      "step " + s + " pitch did not transpose: " + before.lane.pitch[s] +
+      " -> " + after.lane.pitch[s]);
+    checked++;
+  }
+  assert(checked > 0, "phrase had no onsets to transpose");
+});
+
+// The lane redraw rides updateDisplay(), which is menu- and button-rate. A dial
+// drag sends a message per pixel, so if any dial handler reached it the drawer
+// would get a full phrase dump per pixel too.
+test("turning dials never re-emits the phrase", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var quiet = collect(sb, 3, "steps").length;
+
+  ["novelty", "density", "interlock", "chunk", "squelch", "drive", "cutoff",
+   "decay", "sub", "subsat", "wet", "width", "wave", "pw", "fold", "wobrate",
+   "wobdepth", "design"].forEach(function (m) {
+    for (var v = 0; v <= 1.0001; v += 0.02) call(sb, m, v);   // one drag each
+  });
+
+  var after = collect(sb, 3, "steps").length;
+  assert(after === quiet, "dials pushed " + (after - quiet) + " phrase dumps");
+});
+
+// ---------------------------------------------------------------- the lane (device/pg-lane.js)
+
+// The jsui runs in Max, where a test cannot follow it, so maxtest shims
+// mgraphics and records what paint() draws. These check the drawing is a true
+// reading of the phrase — not that it is pretty, which is what the eye is for.
+
+test("the lane draws one body per onset, in accent or plain colour", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb), ops = drawPhrase(sb).ops;
+
+  var onsets = 0, accents = 0;
+  for (var s = 0; s < p.steps; s++) {
+    if (!(p.lane.flags[s] & 1)) continue;
+    onsets++;
+    if (p.lane.flags[s] & 2) accents++;
+  }
+  assert(onsets > 0, "the phrase has no onsets to draw");
+
+  var bodies = noteBodies(ops);
+  assert(bodies.length === onsets,
+    "drew " + bodies.length + " note bodies for " + onsets + " onsets");
+  var amber = mt.opsColored(bodies, C_ACCENT).length;
+  assert(amber === accents, "drew " + amber + " accented notes for " + accents + " accents");
+  assert(bodies.length - amber === onsets - accents, "a plain note drew in neither colour");
+});
+
+test("the lane draws a slide only where one leads to a following note", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb), ops = drawPhrase(sb).ops;
+
+  var joinable = 0;
+  for (var s = 0; s < p.steps; s++) {
+    if (!(p.lane.flags[s] & 1) || !(p.lane.flags[s] & 4)) continue;
+    for (var t = s + 1; t < p.steps; t++) {
+      if (p.lane.flags[t] & 1) { joinable++; break; }
+    }
+  }
+  var lines = mt.opsColored(ops, C_SLIDE).filter(function (o) {
+    return o.op === "stroke" && o.points.length === 2;
+  });
+  assert(lines.length === joinable,
+    "drew " + lines.length + " slides for " + joinable + " that reach a next note");
+  // the last slide of a phrase has nothing to glide to, and must not be drawn
+  // off the end of the grid
+  lines.forEach(function (o) {
+    assert(o.x1 <= LANE_W, "a slide ran past the right edge, to x " + o.x1);
+  });
+});
+
+test("the lane puts a higher pitch higher, and the tonic on its guide line", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb);
+  var ops = drawPhrase(sb).ops, bodies = noteBodies(ops);
+
+  var pitches = [], i = 0;
+  for (var s = 0; s < p.steps; s++) if (p.lane.flags[s] & 1) pitches.push(p.lane.pitch[s]);
+  assert(pitches.length === bodies.length, "pitch list and body list disagree");
+
+  // bodies come out in step order, so pitch and y can be compared pairwise
+  var pairs = 0;
+  for (i = 1; i < pitches.length; i++) {
+    if (pitches[i] === pitches[i - 1]) continue;
+    pairs++;
+    var hi = pitches[i] > pitches[i - 1];
+    var up = bodies[i].y + bodies[i].h / 2 < bodies[i - 1].y + bodies[i - 1].h / 2;
+    assert(hi === up, "pitch " + pitches[i] + " after " + pitches[i - 1] +
+      " drew at y " + bodies[i].y.toFixed(1) + " after " + bodies[i - 1].y.toFixed(1));
+  }
+  assert(pairs > 0, "this phrase is all one pitch — nothing checked");
+});
+
+test("the lane header names the phrase the core sent", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb), ops = drawPhrase(sb).ops;
+  var texts = laneTexts(ops);
+
+  [p.name, p.groove, p.mode, p.contour].forEach(function (word) {
+    assert(texts.indexOf(word) >= 0, "the header never names \"" + word + "\"");
+  });
+  var onsets = 0;
+  for (var s = 0; s < p.steps; s++) if (p.lane.flags[s] & 1) onsets++;
+  assert(texts.indexOf(onsets + " note") >= 0, "the header miscounts the notes");
+  assert(texts.indexOf("1") >= 0 && texts.indexOf("2") >= 0, "the bar ruler is missing");
+});
+
+// Whatever the phrase does, the drawing stays inside the box: Max clips
+// silently, so an overflow shows up as a note that is simply not there.
+test("nothing the lane draws falls outside the box", function () {
+  [1, 2, 3, 4, 5].forEach(function (seed) {
+    var sb = mt.loadCore(CORE, { outlets: 4, seed: seed })();
+    call(sb, "pushall");
+    call(sb, "plen", seed % 2);                 // 1, 2 and 4 bar phrases
+    tickSteps(sb, 128);
+    ["Mutate", "Rhythm", "Pitch", "Accent", "Slide"].forEach(function (b) { call(sb, b); });
+    tickSteps(sb, 64);
+
+    [[makeLane, LANE_W, LANE_H, "window"],
+     [makeRack, RACK_W, RACK_H, "rack"]].forEach(function (v) {
+      drawPhrase(sb, v[0]).ops.forEach(function (o) {
+        assert(o.x >= -0.01 && o.y >= -0.01 && o.x1 <= v[1] + 0.01 && o.y1 <= v[2] + 0.01,
+          "seed " + seed + ", " + v[3] + ": a " + o.op + " " +
+          (o.text ? "(\"" + o.text + "\") " : "") +
+          "ran to " + o.x.toFixed(1) + "," + o.y.toFixed(1) + " .. " +
+          o.x1.toFixed(1) + "," + o.y1.toFixed(1) + " in a " + v[1] + "x" + v[2] + " box");
+      });
+    });
+  });
+});
+
+// §5.4 the rack view. Live gives the device 169 px and the status display
+// already spells out "A0 · rolling · 2 bars · repeat · wet" one row above the
+// lane, so repeating it there would cost 20 px of pitch range to say nothing
+// new. The counts are new, so they move down to the ruler rather than go.
+test("the rack lane drops the identity line but keeps the counts", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb);
+  var win = laneTexts(drawPhrase(sb, makeLane).ops);
+  var rack = laneTexts(drawPhrase(sb, makeRack).ops);
+
+  assert(win.indexOf(p.name) >= 0, "the window lane lost its header");
+  assert(rack.indexOf(p.name) < 0,
+    "the rack lane repeats the status display's phrase name: " + rack);
+  [p.groove, p.mode, p.contour].forEach(function (word) {
+    assert(rack.indexOf(word) < 0, "the rack lane repeats the status display's " + word);
+  });
+
+  var onsets = 0;
+  for (var i = 0; i < p.steps; i++) if (p.lane.flags[i] & 1) onsets++;
+  [win, rack].forEach(function (t, k) {
+    assert(t.indexOf(onsets + " note") >= 0,
+      (k ? "the rack" : "the window") + " lane lost the note count");
+  });
+  assert(rack.indexOf("1") >= 0, "the rack lane lost the bar ruler");
+});
+
+// The 20 px the header gave up go to the notes, not to empty space.
+test("the rack lane spends the header's space on pitch", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  function top(make) {
+    return Math.min.apply(null, noteBodies(drawPhrase(sb, make).ops)
+      .map(function (o) { return o.y; }));
+  }
+  assert(top(makeRack) < top(makeLane) - 5,
+    "the rack lane's notes start no higher than the window's, header or not");
+});
+
+// The counts sit on the ruler in the rack view, in the same band the beat ticks
+// occupy. Nothing else in the lane draws over anything, and this line is the
+// one place it could start.
+test("the rack ruler's ticks stop short of the counts", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var ops = drawPhrase(sb, makeRack).ops;
+  var label = ops.filter(function (o) {
+    return o.op === "text" && o.text.indexOf(" note") > 0;
+  })[0];
+  assert(label, "the rack lane drew no counts");
+  ops.forEach(function (o) {                       // a tick is a 4 px hairline
+    if (o.op !== "stroke" || o.w > 1 || o.h > 8) return;
+    assert(o.x1 <= label.x, "a ruler tick at " + o.x.toFixed(1) +
+      " strikes through the counts, which start at " + label.x.toFixed(1));
+  });
+});
+
+test("the lane redraws on steps, not on the header alone", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var h = mt.last(sb, 3, "phrase"), lane = makeLane();
+
+  assert(mt.paint(lane).length <= 3, "an empty lane drew more than its ground and label");
+  callArgs(lane, "phrase", h.slice(1));
+  assert(lane.__draw.redraws === 0, "the header alone asked for a redraw");
+  callArgs(lane, "steps", mt.last(sb, 3, "steps")[1]);
+  assert(lane.__draw.redraws === 1, "the grid did not ask for a redraw");
+  assert(noteBodies(mt.paint(lane)).length > 0, "nothing drew once both messages landed");
+});
+
+test("Mutate changes what the lane draws", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  function shape() {
+    return noteBodies(drawPhrase(sb).ops).map(function (o) {
+      return [o.x, o.y, o.w].map(function (v) { return v.toFixed(1); }).join(",");
+    }).join(" ");
+  }
+  var before = shape();
+  for (var i = 0; i < 6 && shape() === before; i++) { call(sb, "Mutate"); tickSteps(sb, 32); }
+  assert(shape() !== before, "six mutations later the lane draws the same phrase");
+});
+
 // ---------------------------------------------------------------- the test sandbox
 
 // §5.1 step probability draws Math.random at play time, so two runs of the same
@@ -1513,7 +1862,7 @@ test("sandboxes with the same seed play identical note streams", function () {
   function notes(sb) { return JSON.stringify([sb.__state.out[1], sb.__state.outT[1]]); }
 
   // all four exist before any of them plays, so a stream shared between them shows
-  var seed2 = mt.loadCore(CORE, { outlets: 3, seed: 2 });
+  var seed2 = mt.loadCore(CORE, { outlets: 4, seed: 2 });
   var a = makeSandbox(), b = makeSandbox(), c = seed2(), d = seed2();
   [a, b, c, d].forEach(function (sb) { tickSteps(sb, 200); });
 
@@ -1532,8 +1881,14 @@ test("sandboxes with the same seed play identical note streams", function () {
 // new outlet(0, "…") in pg-core.js from landing on an unrouted [route] outlet
 // and silently doing nothing inside Live.
 test("every selector the core emits is routed in the built device", function () {
-  var routed = mt.routedSelectors(mt.readPatch(PATCH));
+  var patch = mt.readPatch(PATCH);
+  var routed = mt.routedSelectors(patch);
   assert(routed.routes >= 3, "expected the synth/note/display routes, found " + routed.routes);
+
+  // The phrase outlet skips [route] — it goes straight to the lane's jsui,
+  // because route strips the selector it matches and the lane needs those
+  // names. So the jsui's handlers consume selectors just as a route does.
+  var consumed = routed.selectors.concat(mt.jsuiHandlers(patch, DEVICE));
 
   // exercise everything that emits: startup, every macro, every button
   var sb = makeSandbox();
@@ -1553,9 +1908,12 @@ test("every selector the core emits is routed in the built device", function () 
 
   var emitted = mt.emittedSelectors(sb);
   emitted.forEach(function (sel) {
-    assert(routed.selectors.indexOf(sel) >= 0, "the core emits \"" + sel + "\" but the patch does not route it");
+    assert(consumed.indexOf(sel) >= 0,
+      "the core emits \"" + sel + "\" but nothing in the patch routes or draws it");
   });
-  // and nothing in the patch is waiting on a selector the core never sends
+  // and nothing in the patch is waiting on a selector the core never sends.
+  // Only the routes: a jsui's handlers include its own names (paint, and the
+  // mouse handlers to come), which the core has no business emitting.
   routed.selectors.forEach(function (sel) {
     assert(emitted.indexOf(sel) >= 0, "the patch routes \"" + sel + "\" but the core never emits it");
   });
@@ -1564,9 +1922,10 @@ test("every selector the core emits is routed in the built device", function () 
 // the other half of the same contract: every control in the patch has to reach
 // a handler that exists, or the dial turns and nothing happens
 test("every UI control in the built device reaches a core handler", function () {
-  // "Waveform" opens the floating scope~ window via [pcontrol], never touches
-  // pg-core.js — it is UI plumbing, not a musical control.
-  var controls = mt.patchControls(mt.readPatch(PATCH), ["set", "Restore", "pos", "Waveform"]);
+  // The page buttons drop out on their own wiring — patchControls follows each
+  // message box's cords and skips the ones that only reach [pcontrol] or
+  // [thispatcher], so opening a window is never mistaken for a musical control.
+  var controls = mt.patchControls(mt.readPatch(PATCH), ["set", "Restore", "pos"]);
   assert(controls.length >= 20, "found only " + controls.length + " controls to check");
   var sb = makeSandbox();
   controls.forEach(function (c) {
@@ -1574,6 +1933,603 @@ test("every UI control in the built device reaches a core handler", function () 
       "the patch sends \"" + c.name + "\" but pg-core.js has no such handler");
     if (c.value === undefined) call(sb, c.name);
     else call(sb, c.name, c.value);
+  });
+});
+
+// §5.4 where the lane ended up. The rack is the view a player has open all
+// the time, so the lane has to be there and not only in the window they may
+// never open; and both views are fed by the same outlet, unrouted, because
+// [route] would eat the selectors they read.
+test("the built device shows the lane in the rack, not a waveform", function () {
+  var patch = mt.readPatch(PATCH);
+  var lanes = mt.jsuiBoxes(patch).filter(function (j) {
+    return j.filename === "pg-lane.js";   // the mod-ring overlays are their own test
+  });
+  assert(lanes.length === 2, "expected a rack lane and a window lane, found " + lanes.length);
+
+  lanes.forEach(function (j) {
+    assert(j.args.length === 1, j.varname + " has no view argument");
+  });
+  var views = lanes.map(function (j) { return j.args[0] + "@" + (j.where || "rack"); });
+  views.sort();
+  assert(views.join(" ") === "rack@rack window@wave_window",
+    "the lanes are not where they should be: " + views.join(" "));
+
+  // it took the waveform strip's place: the rack has no scope~ left, and the
+  // lane fills the height that strip used to
+  var rack = lanes.filter(function (j) { return j.args[0] === "rack"; })[0];
+  patch.boxes.forEach(function (b) {
+    assert(b.box.maxclass !== "newobj" || String(b.box.text).indexOf("scope~") !== 0,
+      "the rack still has a scope~ competing with the lane");
+  });
+  assert(rack.rect[3] >= 120, "the rack lane is only " + rack.rect[3] + " px tall");
+  assert(rack.rect[1] + rack.rect[3] <= 169,
+    "the rack lane runs past Live's 169 px device height");
+
+  // outlet 3 straight in, no [route] in between — here, and through the
+  // subpatcher's third inlet for the window lane
+  var feeds = mt.feeders(patch, rack.id);
+  assert(feeds.length === 1 && feeds[0].text === "js pg-core.js" && feeds[0].outlet === 3,
+    "the rack lane is not fed by the core's phrase outlet: " + JSON.stringify(feeds));
+
+  var win = lanes.filter(function (j) { return j.args[0] === "window"; })[0];
+  var winFeeds = mt.feeders(win.patcher, win.id);
+  assert(winFeeds.length === 1 && winFeeds[0].maxclass === "inlet",
+    "the window lane is not fed by its subpatcher inlet: " + JSON.stringify(winFeeds));
+  var sub = patch.boxes.filter(function (b) { return b.box.varname === "wave_window"; })[0];
+  var subFeeds = mt.feeders(patch, sub.box.id).filter(function (f) { return f.outlet === 3; });
+  assert(subFeeds.length === 1 && subFeeds[0].text === "js pg-core.js",
+    "the sound-design window is not fed the phrase outlet");
+});
+
+// The MIDI-effect build has no audio at all, so the lane is the only display
+// it could have — and it is the build where seeing the notes matters most.
+test("the MIDI build gets the same rack lane", function () {
+  var patch = mt.readPatch(MIDI_PATCH);
+  var lanes = mt.jsuiBoxes(patch);
+  assert(lanes.length === 1, "expected one lane in the MIDI build, found " + lanes.length);
+  assert(lanes[0].args[0] === "rack", "the MIDI build's lane is not the rack view");
+
+  var feeds = mt.feeders(patch, lanes[0].id);
+  assert(feeds.length === 1 && feeds[0].text === "js pg-core.js" && feeds[0].outlet === 3,
+    "the MIDI build's lane is not fed by the phrase outlet: " + JSON.stringify(feeds));
+
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  tickSteps(sb, 32);
+  var emitted = mt.emittedSelectors(sb, 3);
+  mt.jsuiHandlers(patch, DEVICE).forEach(function (h) {
+    if (h === "paint") return;
+    assert(emitted.indexOf(h) >= 0,
+      "the MIDI build's lane waits on \"" + h + "\" but the core never sends it");
+  });
+});
+
+// ---------------------------------------------------------------- the window
+
+// Readers for the two-page sound-design window. The builder's own box keys are
+// not written into the patch, so these find things the way Max and Live find
+// them: subpatchers by varname, controls by maxclass and parameter_longname,
+// and a section by the caption printed inside a panel's top-left corner.
+function subpatch(pat, varname) {
+  var box = pat.boxes.filter(function (b) { return b.box.varname === varname; })[0];
+  if (!box) throw new Error("no subpatcher named " + varname + " in this patcher");
+  return box.box.patcher;
+}
+
+// every live.* control in one patcher, in build order. A live.menu is as much a
+// stage's control as a live.dial is, so both count.
+function liveControls(pat) {
+  return pat.boxes.map(function (b) { return b.box; })
+    .filter(function (b) { return String(b.maxclass).indexOf("live.") === 0; })
+    .map(function (b) {
+      return { name: b.saved_attribute_attributes.valueof.parameter_longname,
+               maxclass: b.maxclass, rect: b.presentation_rect };
+    });
+}
+
+function controlNames(pat) {
+  return liveControls(pat).map(function (c) { return c.name; });
+}
+
+// panel + the caption ui.section() prints at its inset corner, sorted the way
+// the page reads: rows down, then left to right. Read off the geometry, since
+// what a player sees as a group is the tint behind the controls, not a key.
+function sections(pat) {
+  var boxes = pat.boxes.map(function (b) { return b.box; });
+  var labels = boxes.filter(function (b) {
+    return b.maxclass === "comment" && b.presentation_rect;
+  });
+  return boxes.filter(function (b) { return b.maxclass === "panel" && b.presentation_rect; })
+    .map(function (b) {
+      var r = b.presentation_rect;
+      var cap = labels.filter(function (c) {
+        return c.presentation_rect[0] === r[0] + 8 && c.presentation_rect[1] === r[1] + 2;
+      })[0];
+      return cap ? { label: cap.text, rect: r } : null;
+    })
+    .filter(Boolean)
+    .sort(function (a, b) { return (a.rect[1] - b.rect[1]) || (a.rect[0] - b.rect[0]); });
+}
+
+function inside(rect, outer) {
+  return rect[0] >= outer[0] && rect[1] >= outer[1] &&
+         rect[0] + rect[2] <= outer[0] + outer[2] &&
+         rect[1] + rect[3] <= outer[1] + outer[3];
+}
+
+// the box texts a box's output runs through, forward. Page navigation is
+// wiring, not captions — the captions are the part most likely to be reworded.
+function chainFrom(pat, text) {
+  var byId = {}, start = null;
+  pat.boxes.forEach(function (b) {
+    byId[b.box.id] = b.box;
+    if (b.box.text === text) start = b.box.id;
+  });
+  if (start === null) throw new Error("no box reading \"" + text + "\" in this patcher");
+  var out = [], seen = {}, queue = [start];
+  while (queue.length) {
+    var from = queue.shift();
+    if (seen[from]) continue;
+    seen[from] = 1;
+    (pat.lines || []).forEach(function (l) {
+      if (l.patchline.source[0] !== from) return;
+      var dst = byId[l.patchline.destination[0]];
+      if (!dst) return;
+      out.push(dst.text || dst.maxclass);
+      queue.push(dst.id);
+    });
+  }
+  return out;
+}
+
+// §2 the signal path, drawn as the signal path. A player reaching for the
+// filter should find it where the filter is — after the oscillator and the sub,
+// before the shaping and the space — so the window's order is the audio order,
+// left to right and top to bottom.
+test("the sound page is grouped by signal flow", function () {
+  var wp = subpatch(mt.readPatch(PATCH), "wave_window");
+  var secs = sections(wp);
+  var order = secs.map(function (s) { return s.label; });
+  var stages = order.filter(function (l) { return l !== "PAGE"; });
+  assert(stages.join(" ") === "OSC SUB FILTER SHAPE SPACE CHARACTER",
+    "the sound page does not read in signal order: " + stages.join(" "));
+  assert(order[order.length - 1] === "PAGE",
+    "the page tab is not last on the page: " + order.join(" "));
+
+  // and each stage holds exactly its own controls — a dial sitting under the
+  // wrong caption is the one failure this whole regrouping exists to prevent
+  var BELONGS = {
+    OSC: "Wave PWM Fold", SUB: "Sub SubSat SubOct",
+    FILTER: "Squelch Cutoff Decay Drive Mode", SHAPE: "Chunk WobRate WobDepth",
+    SPACE: "Wet Width", CHARACTER: "Design"
+  };
+  var controls = liveControls(wp), placed = 0;
+  secs.forEach(function (s) {
+    if (!BELONGS[s.label]) return;
+    var held = controls.filter(function (c) { return inside(c.rect, s.rect); })
+      .map(function (c) { return c.name; });
+    placed += held.length;
+    assert(held.join(" ") === BELONGS[s.label],
+      s.label + " holds \"" + held.join(" ") + "\", not \"" + BELONGS[s.label] + "\"");
+  });
+  assert(placed === controls.length,
+    (controls.length - placed) + " control(s) on the sound page sit outside every stage");
+});
+
+// §6 the meta controls, where they belong. Squelch, Chunk, Wet and Design each
+// scale what the rest of their stage does, so they lead it: drawn bigger than
+// the dials they move, and bottom-aligned with them so the names stay on one
+// baseline whatever the knob size.
+test("the four sound macros lead their stage, drawn larger", function () {
+  var wp = subpatch(mt.readPatch(PATCH), "wave_window");
+  var secs = sections(wp);
+  var dials = liveControls(wp).filter(function (c) { return c.maxclass === "live.dial"; });
+  var MACROS = "Squelch Chunk Wet Design".split(" ");
+  var big = dials.filter(function (d) { return MACROS.indexOf(d.name) >= 0; });
+  assert(big.length === MACROS.length,
+    "expected " + MACROS.length + " promoted macros on the sound page, found " + big.length);
+
+  // the per-stage dials are all one size, so "bigger" reads as a rank and not
+  // as an accident of layout
+  var plain = dials.filter(function (d) { return MACROS.indexOf(d.name) < 0; });
+  var w = plain[0].rect[2];
+  plain.forEach(function (d) {
+    assert(d.rect[2] === w, d.name + " is " + d.rect[2] + " px wide, not " + w);
+  });
+
+  big.forEach(function (d) {
+    assert(d.rect[2] > w, d.name + " is no bigger than the dials it scales");
+    var stage = secs.filter(function (s) { return inside(d.rect, s.rect); })[0];
+    assert(stage, d.name + " is not inside any stage");
+    dials.filter(function (o) { return inside(o.rect, stage.rect); }).forEach(function (o) {
+      assert(o.rect[0] >= d.rect[0],
+        stage.label + ": " + o.name + " sits ahead of the macro that leads it");
+      assert(o.rect[1] + o.rect[3] === d.rect[1] + d.rect[3],
+        stage.label + ": " + o.name + " does not share a bottom edge with " + d.name);
+    });
+  });
+});
+
+// §1/§5 what the generator plays, versus how it sounds. The groove family, the
+// root, the length and the freezes are set once per project and then left
+// alone, so they are off the page used for sculpting — which is also what stops
+// Interlock reading as a tone control sitting among the filter dials.
+test("the generative controls moved to a second page", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var cp = subpatch(wp, "comp_window");
+  var sound = controlNames(wp), compose = controlNames(cp);
+  "Groove Root Length Novelty Density Interlock Lock FrzRhythm FrzPitch FrzTimbre"
+    .split(" ").forEach(function (n) {
+      assert(compose.indexOf(n) >= 0, n + " is not on the compose page");
+      assert(sound.indexOf(n) < 0, n + " is still on the sound page");
+    });
+
+  // the buttons that reroll a phrase, or one layer of it, went with them
+  var buttons = cp.boxes.map(function (b) { return b.box; })
+    .filter(function (b) { return b.maxclass === "message" && b.presentation === 1; })
+    .map(function (b) { return b.text; });
+  "Mutate Return Reseed Rhythm Pitch Accent Slide Sound Capture".split(" ")
+    .forEach(function (n) {
+      assert(buttons.indexOf(n) >= 0, n + " is not on the compose page");
+    });
+
+  // and it is a page, not a dead end: a subpatcher's controls cannot patchcord
+  // to the core two patchers up, so they leave through its outlet, into the
+  // sound page's outlet, into js — one break anywhere and the page goes silent
+  var pageOut = cp.boxes.map(function (b) { return b.box; })
+    .filter(function (b) { return b.maxclass === "outlet"; });
+  assert(pageOut.length === 1,
+    "the compose page has " + pageOut.length + " outlets, expected one");
+  var feeds = mt.feeders(cp, pageOut[0].id);
+  var shims = feeds.filter(function (f) { return String(f.text).indexOf("prepend ") === 0; });
+  assert(shims.length === compose.length,
+    "the compose page has " + compose.length + " controls but only " +
+    shims.length + " of them reach its outlet");
+  // the reroll buttons wire straight in, with no prepend to name them — and
+  // Sculpt is not among them, because a page tab is not a musical control
+  var rerolls = feeds.filter(function (f) { return f.maxclass === "message"; })
+    .map(function (f) { return f.text; }).sort();
+  assert(rerolls.join(" ") === "Accent Capture Mutate Pitch Reseed Return Rhythm Slide Sound",
+    "the compose page's buttons do not all reach its outlet: " + rerolls.join(" "));
+
+  var winOut = wp.boxes.map(function (b) { return b.box; })
+    .filter(function (b) { return b.maxclass === "outlet" && b.comment === "control messages out"; })[0];
+  assert(mt.feeders(wp, winOut.id).filter(function (f) { return f.text === "p comp_window"; }).length === 1,
+    "the compose page's controls never leave its window");
+  var js = patch.boxes.filter(function (b) {
+    return String(b.box.text).indexOf("js pg-core") === 0;
+  })[0];
+  assert(mt.feeders(patch, js.box.id).filter(function (f) { return f.text === "p wave_window"; }).length === 1,
+    "the window's controls never reach the core");
+
+  // Compose opens the page, Sculpt closes it and uncovers the one underneath
+  assert(chainFrom(wp, "Compose").slice(0, 3).join(" > ") === "open > pcontrol > p comp_window",
+    "the Compose button does not open the compose page");
+  assert(chainFrom(cp, "Sculpt").join(" > ") === "wclose > thispatcher",
+    "the Sculpt button does not close the compose page");
+});
+
+// The open item the regrouping had to settle first. Live builds automation,
+// MIDI mapping and Push's bank layout from the device's top-level parameter
+// map, and moving every control into a subpatcher window emptied it — 27
+// entries became 0. A nested parameter is addressed "<subpatcher>::<its own
+// id>", one hop per level, so the map has to be lifted, not left behind.
+test("the nested window keeps Live's parameter map and Push banks", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var cp = subpatch(wp, "comp_window");
+  var params = patch.parameters || {};
+  var addrs = Object.keys(params).filter(function (k) { return k.indexOf("obj-") === 0; });
+  var named = addrs.map(function (k) { return params[k][0]; });
+
+  var expected = controlNames(wp).concat(controlNames(cp));
+  assert(expected.length > 0, "no live controls in the window at all");
+  expected.forEach(function (n) {
+    assert(named.indexOf(n) >= 0,
+      "Live cannot see " + n + ": it is not in the device's parameter map");
+  });
+  assert(named.length === expected.length,
+    "the parameter map holds " + named.length + " entries for " + expected.length + " controls");
+
+  // one "::" per subpatcher between a control and the device
+  controlNames(cp).forEach(function (n) {
+    var k = addrs.filter(function (a) { return params[a][0] === n; })[0];
+    assert(k.split("::").length === 3,
+      n + " is addressed \"" + k + "\", not two levels down");
+  });
+
+  // and Push pages through the same order the window reads in
+  var banks = params.parameterbanks || {};
+  assert(banks["0"] && banks["0"].parameters.join(" ") ===
+    "Wave PWM Fold Sub SubSat SubOct Squelch Cutoff",
+    "Push's first bank is not the head of the signal path: " +
+    (banks["0"] ? banks["0"].parameters.join(" ") : "no banks at all"));
+  var banked = [];
+  Object.keys(banks).forEach(function (i) {
+    banks[i].parameters.forEach(function (n) { if (n !== "-") banked.push(n); });
+  });
+  assert(banked.join(" ") === named.join(" "),
+    "the Push banks and the parameter map disagree:\n      " +
+    banked.join(" ") + "\n      " + named.join(" "));
+});
+
+// ---------------------------------------------------------------- the mod rings
+
+// §2.8 Design lets each phrase's own sound push six of the dials on the sound
+// page. §5.5 draws that push as a second ring inside the dial it moved, so the
+// movement reads as the instrument working rather than as a dial with a fault.
+//
+// Each ring is named for the selector on the core's synth outlet that carries
+// its pushed value — that is how device/pg-mod.js addresses it — and the ring
+// belongs to the dial holding the sound key that selector was scaled from.
+var MOD_RINGS = {   // ring name (= core selector) -> { sound key, dial }
+  wave:    { key: "wave",     dial: "Wave" },
+  pw:      { key: "pw",       dial: "PWM" },
+  fold:    { key: "fold",     dial: "Fold" },
+  subdrv:  { key: "subsat",   dial: "SubSat" },
+  wobrate: { key: "wobrate",  dial: "WobRate" },
+  wobcut:  { key: "wobdepth", dial: "WobDepth" }
+};
+var C_RING = [0.980, 0.780, 0.459];   // pg-mod.js RING — the lane's amber again
+
+// live.dial's sweep, stated here rather than imported: 270 degrees with the gap
+// at the bottom, running lower-left round to lower-right, clockwise because y
+// is down. A ring drawn on any other arc would not line up with the dial.
+var DIAL_A0 = Math.PI * 0.75, DIAL_SPAN = Math.PI * 1.5;
+
+function modOverlays(pat) {
+  return mt.jsuiBoxes(pat).filter(function (j) { return j.filename === "pg-mod.js"; });
+}
+
+// the rings one overlay declares, as {name, cx, cy, r} in that box's own
+// coordinates — four creation arguments each, exactly as pg-mod.js reads them
+function ringsOf(j) {
+  var out = [];
+  for (var i = 0; i + 3 < j.args.length; i += 4) {
+    out.push({ name: String(j.args[i]), cx: +j.args[i + 1],
+               cy: +j.args[i + 2], r: +j.args[i + 3] });
+  }
+  return out;
+}
+
+function dialRect(pat, longname) {
+  var d = liveControls(pat).filter(function (c) { return c.name === longname; })[0];
+  if (!d) throw new Error("no control named " + longname + " on the sound page");
+  return d.rect;
+}
+
+function overlaps(a, b) {
+  return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] &&
+         a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+}
+
+// Max's own dispatch, replayed: every message the core put on its synth outlet
+// goes to the handler of that name, or to anything() when there is none. The
+// overlay takes that outlet whole, so this is the traffic it really sees — and
+// a missing anything() shows up here as a throw, the way Max shows it as an
+// error in its window.
+function feedSynth(sb, mod) {
+  sb.__state.out[0].forEach(function (m) {
+    var sel = String(m[0]);
+    callArgs(mod, mt.hasHandler(mod, sel) ? sel : "anything", m.slice(1));
+  });
+}
+
+function makeMod(j) {
+  return mt.loadJsui(path.join(DEVICE, "pg-mod.js"),
+                     { width: j.rect[2], height: j.rect[3], args: j.args })();
+}
+
+test("every dial a phrase moves wears a ring, and no other dial does", function () {
+  var patch = mt.readPatch(PATCH);
+  var mods = modOverlays(patch);
+  assert(mods.length === 2, "expected one ring overlay per dial row, found " + mods.length);
+  mods.forEach(function (j) {
+    assert(j.where === "wave_window", "a ring overlay sits in " + (j.where || "the rack"));
+  });
+
+  var named = [];
+  mods.forEach(function (j) {
+    ringsOf(j).forEach(function (r) { named.push(r.name); });
+  });
+  named.sort();
+  var want = Object.keys(MOD_RINGS).sort();
+  assert(named.join(" ") === want.join(" "),
+    "the rings are " + named.join(" ") + ", not " + want.join(" "));
+
+  // the same six the core calls a phrase's sound — a key added to §2.8 without
+  // a ring would be a dial moving with no explanation all over again
+  var keys = named.map(function (n) { return MOD_RINGS[n].key; }).sort();
+  assert(keys.join(" ") === SOUND_KEYS.slice().sort().join(" "),
+    "the rings cover " + keys.join(" ") + ", but a phrase's sound is " + SOUND_KEYS.join(" "));
+
+  // and every ring name is a selector the core really sends, so a rename in
+  // pushSynth() cannot leave a ring waiting on a message that never comes
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var emitted = mt.emittedSelectors(sb);
+  named.forEach(function (n) {
+    assert(emitted.indexOf(n) >= 0,
+      "a ring listens for \"" + n + "\", but the core never emits it");
+  });
+});
+
+test("a ring is drawn on its own dial's knob, inside the overlay", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+
+  modOverlays(patch).forEach(function (j) {
+    var box = j.rect;
+    ringsOf(j).forEach(function (r) {
+      var d = dialRect(wp, MOD_RINGS[r.name].dial);
+      var cx = box[0] + r.cx, cy = box[1] + r.cy;     // window coordinates
+
+      assert(Math.abs(cx - (d[0] + d[2] / 2)) < 0.5,
+        r.name + "'s ring is off the dial's centre line by " +
+        (cx - (d[0] + d[2] / 2)).toFixed(2) + " px");
+      // the knob hangs under the name label, well above the value readout
+      var up = (cy - d[1]) / d[3];
+      assert(up > 0.3 && up < 0.6,
+        r.name + "'s ring centre sits " + Math.round(up * 100) + "% down its dial");
+
+      // big enough to read as a ring, never wider than the knob can be
+      assert(r.r <= d[2] / 4 && r.r >= d[2] / 8,
+        r.name + "'s ring radius is " + r.r + " on a " + d[2] + " px dial");
+      assert(cx - r.r >= d[0] && cx + r.r <= d[0] + d[2] &&
+             cy - r.r >= d[1] && cy + r.r <= d[1] + d[3],
+        r.name + "'s ring spills outside its dial");
+
+      // and inside the jsui, or Max clips it
+      assert(r.cx - r.r >= 0 && r.cy - r.r >= 0 &&
+             r.cx + r.r <= box[2] && r.cy + r.r <= box[3],
+        r.name + "'s ring is clipped by the overlay's own edge");
+    });
+  });
+});
+
+test("a ring overlay lets the dial under it take the mouse", function () {
+  var patch = mt.readPatch(PATCH);
+  var wp = subpatch(patch, "wave_window");
+  var boxes = wp.boxes.map(function (b) { return b.box; });
+  var order = {};
+  boxes.forEach(function (b, i) { order[b.id] = i; });
+
+  modOverlays(patch).forEach(function (j) {
+    var box = boxes.filter(function (b) { return b.id === j.id; })[0];
+    assert(box.ignoreclick === 1, "a ring overlay is not click-through");
+    assert(box.border === 0, "a ring overlay draws a border over the dials");
+    assert(box.parameter_enable === 0, "a ring overlay claims a Live parameter");
+
+    // in front of the dials, or the rings paint under them and never show.
+    // Box order is front-to-back (m4lkit/patch.py, _ordered_boxes), so the
+    // overlay has to come first even though it is built last.
+    boxes.forEach(function (b) {
+      if (!b.presentation_rect || b.maxclass !== "live.dial") return;
+      if (!overlaps(j.rect, b.presentation_rect)) return;
+      assert(order[j.id] < order[b.id],
+        "a ring overlay sits behind the dial it rings");
+    });
+
+    // it spans only the dials between its first and last ring: anything else
+    // that takes a click stays clear of it, so ignoreclick is the second line
+    // of defence rather than the only one
+    boxes.forEach(function (b) {
+      if (!b.presentation_rect) return;
+      var clickable = String(b.maxclass).indexOf("live.") === 0 || b.maxclass === "message";
+      if (!clickable || b.maxclass === "live.dial") return;
+      assert(!overlaps(j.rect, b.presentation_rect),
+        "a ring overlay covers a " + b.maxclass + " at " + b.presentation_rect.join(","));
+    });
+  });
+
+  // fed the synth stream whole, through the window's own inlet — the same
+  // unrouted idiom the lane uses, because [route] would strip these names
+  modOverlays(patch).forEach(function (j) {
+    var feeds = mt.feeders(j.patcher, j.id);
+    assert(feeds.length === 1 && feeds[0].maxclass === "inlet",
+      "a ring overlay is not fed by a subpatcher inlet: " + JSON.stringify(feeds));
+  });
+  var sub = patch.boxes.filter(function (b) { return b.box.varname === "wave_window"; })[0];
+  var synth = mt.feeders(patch, sub.box.id).filter(function (f) { return f.inlet === 3; });
+  assert(synth.length === 1 && synth[0].text === "js pg-core.js" && synth[0].outlet === 0,
+    "the window's ring inlet is not fed the core's synth outlet: " + JSON.stringify(synth));
+});
+
+// The whole point of reading the synth outlet instead of recomputing §2.8 is
+// that the ring cannot disagree with what is audible. That only holds while
+// each handler undoes exactly the scaling pushSynth() applied, so check the
+// round trip against the core's own soundNow(), which dump publishes.
+test("a ring reads back the value the core is really playing", function () {
+  var patch = mt.readPatch(PATCH);
+  var mods = modOverlays(patch);
+
+  var sb = makeSandbox();
+  call(sb, "design", 1);          // full push, so every ring is off its dial
+  call(sb, "Sound");
+  call(sb, "dump");
+  var sound = lastDump(sb).sound;
+
+  var checked = 0;
+  mods.forEach(function (j) {
+    var mod = makeMod(j);
+    feedSynth(sb, mod);
+    mt.evalIn(mod, "rings").forEach(function (r) {
+      var want = sound[MOD_RINGS[r.name].key];
+      assert(r.v !== null, r.name + "'s ring heard nothing on the synth outlet");
+      assert(Math.abs(r.v - want) < 1e-6,
+        r.name + "'s ring shows " + r.v + " where the core is playing " + want);
+      checked++;
+    });
+  });
+  assert(checked === 6, "only " + checked + " of the six rings were checked");
+
+  // and with Design at zero a phrase pushes nothing, so every ring lands back
+  // on its dial's own value — the reading that makes the gap mean something
+  var flat = makeSandbox();
+  call(flat, "design", 0);
+  ["wave", "pw", "fold", "wobrate", "wobdepth", "subsat"]
+    .forEach(function (m) { call(flat, m, 0.62); });
+  call(flat, "Sound");
+  var mod = makeMod(mods[0]);
+  feedSynth(flat, mod);
+  mt.evalIn(mod, "rings").forEach(function (r) {
+    assert(Math.abs(r.v - 0.62) < 1e-6,
+      "at Design 0 " + r.name + "'s ring reads " + r.v + ", not the dial's 0.62");
+  });
+});
+
+test("the ring follows live.dial's own sweep", function () {
+  var patch = mt.readPatch(PATCH);
+  var j = modOverlays(patch)[0];
+  var mod = makeMod(j);
+
+  assert(mt.paint(mod).length === 0,
+    "the overlay drew something before the core had said anything");
+
+  var sb = makeSandbox();
+  call(sb, "design", 1);
+  call(sb, "Sound");
+  feedSynth(sb, mod);
+  var rings = mt.evalIn(mod, "rings");
+  var ops = mt.paint(mod);
+
+  var amber = mt.opsColored(ops, C_RING);
+  assert(amber.length === rings.length * 2,
+    "expected an arc and a tip per ring, found " + amber.length + " amber marks");
+
+  rings.forEach(function (r) {
+    // the ring is the amber stroke that starts where the dial's travel starts
+    var arc = amber.filter(function (o) {
+      if (o.op !== "stroke") return false;
+      var p = o.points[0];
+      return Math.abs(p[0] - (r.cx + r.r * Math.cos(DIAL_A0))) < 0.01 &&
+             Math.abs(p[1] - (r.cy + r.r * Math.sin(DIAL_A0))) < 0.01;
+    });
+    assert(arc.length === 1, r.name + " has " + arc.length + " arcs from the dial's zero");
+
+    var end = arc[0].points[arc[0].points.length - 1];
+    var got = Math.atan2(end[1] - r.cy, end[0] - r.cx);
+    var want = DIAL_A0 + DIAL_SPAN * r.v;
+    while (got < DIAL_A0 - 1e-9) got += Math.PI * 2;
+    assert(Math.abs(got - want) < 1e-6,
+      r.name + "'s ring ends at " + got.toFixed(4) + " rad, not " + want.toFixed(4));
+    assert(Math.abs(Math.sqrt(Math.pow(end[0] - r.cx, 2) +
+                              Math.pow(end[1] - r.cy, 2)) - r.r) < 1e-6,
+      r.name + "'s ring is not a circle of its own radius");
+  });
+
+  // the faint travel behind each ring, so a short arc still reads as a value
+  var track = ops.filter(function (o) {
+    return o.op === "stroke" && o.color[0] === 1 && o.color[3] < 0.2;
+  });
+  assert(track.length === rings.length,
+    "expected one track per ring, found " + track.length);
+
+  ops.forEach(function (o) {
+    assert(o.x >= -1 && o.y >= -1 && o.x1 <= j.rect[2] + 1 && o.y1 <= j.rect[3] + 1,
+      "a ring overlay drew outside its box: " + JSON.stringify([o.x, o.y, o.x1, o.y1]));
   });
 });
 

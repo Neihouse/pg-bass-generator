@@ -5,7 +5,7 @@
 
 autowatch = 1;
 inlets = 1;
-outlets = 3; // 0: synth params, 1: note events, 2: display/debug
+outlets = 4; // 0: synth params, 1: note events, 2: display/debug, 3: phrase view
 
 // ---------------------------------------------------------------- constants
 
@@ -1272,6 +1272,41 @@ function updateDisplay() {
     "·", phrase.bars + (phrase.bars === 1 ? " bar" : " bars"),
     "·", phrase.contour,
     "·", modeName());
+  pushPhrase();
+}
+
+// The status line says which phrase is playing; this says what is in it. The
+// lane display needs the phrase itself — every layer the generator wrote, per
+// step — so the player can see what a Mutate or a layer reroll actually did
+// instead of inferring it from two bars of audio (§5 step metadata).
+//
+//   phrase <name> <bars> <steps> <root> <groove> <mode> <contour>
+//   steps  <flags> <pitch> <vel> <gate> <prob> <timbre> <wet> <micro> × steps
+//
+// One step is 8 numbers in the same order and rounding pushState() uses, so the
+// two serializations stay legible against each other; flags is a bitmask of
+// 1 onset, 2 accent, 4 slide. "steps" lands last and is the redraw trigger.
+//
+// This rides updateDisplay(), which is menu- and button-rate — no dial handler
+// reaches it — so a drag never floods the drawer with full phrase dumps.
+function pushPhrase() {
+  var p = phrase;
+  if (!p || !p.onsets) return;
+  var n = p.onsets.length;
+  outlet(3, "phrase", phraseName(p), p.bars, n, P.root,
+    grooveNow().name, modeName(), p.contour);
+  var a = [];
+  for (var s = 0; s < n; s++) {
+    a.push((p.onsets[s] ? 1 : 0) | (p.accents[s] ? 2 : 0) | (p.slides[s] ? 4 : 0));
+    a.push(p.pitches[s] || 0);
+    a.push((p.vels && p.vels[s]) || 0);
+    a.push(round3(p.gates[s]));
+    a.push(round3(p.probs[s]));
+    a.push(round3(p.timbres[s]));
+    a.push(round3(p.wets[s]));
+    a.push(round3(p.micros[s]));
+  }
+  outlet(3, "steps", a);
 }
 
 // ---------------------------------------------------------------- MIDI capture (§6)
@@ -1422,6 +1457,7 @@ function root(i) { // §5.3-adjacent: live transpose, phrase identity intact
       if (phrase.onsets[s]) phrase.pitches[s] += delta;
     }
     pushState();
+    pushPhrase();   // transpose leaves the status line alone, but moves the lane
   }
 }
 

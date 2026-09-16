@@ -22,48 +22,82 @@ from m4lkit.patch import Patch, write_device
 
 DEVICE_DIR = ROOT / "device"
 
-# Every control on the device, grouped for both the floating sound-design
-# window's sectioned panels (build_wave_window) and Live's automation/Push
-# mapping (the longname). The message name is the handler in pg-core.js.
-DIAL_GROUPS = [  # (label, ramp, [(parameter longname, initial, js message)])
-    ("macro", "gray", [
-        ("Novelty", 0.45, "novelty"), ("Density", 0.5, "density"),
-        ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
-    ]),
-    ("tone", "coral", [
-        ("Chunk", 0.55, "chunk"), ("Squelch", 0.5, "squelch"),
-        ("Drive", 0.35, "drive"), ("Cutoff", 0.45, "cutoff"),
-        ("Decay", 0.5, "decay"),
+# Every control on the device, grouped for both the floating window's
+# sectioned panels and Live's automation/Push mapping (the longname). The
+# message name is the handler in pg-core.js.
+#
+# The window has two pages. The sound page (build_wave_window) is the device's
+# sculpting surface, laid out in signal order — oscillator, sub, filter, shape,
+# space — so a panel sits where its stage sits in the audio path. The compose
+# page (build_compose_page) holds what decides *what* gets played rather than
+# how it sounds; it is set once per project, and keeping it off the sound page
+# is what lets the sound page breathe.
+
+MACRO_W = 108.0   # a §6 meta control's diameter; the per-stage dials are 72
+
+STAGES = [  # (label, ramp, dials, menus) — one panel per stage of the path
+    # A dial's optional fourth element is its diameter. The four §6 meta
+    # controls that live on this page — Squelch, Chunk, Wet and Design — lead
+    # their stage at MACRO_W, with the per-stage dials that feed them beside
+    # them at the ordinary size. Novelty and Density are §6 too, but they
+    # decide the notes, so they sit on the compose page instead.
+    ("osc", "coral", [
         # §2.6 waveform shaping: saw<->pulse blend, pulse width, wavefolder
         ("Wave", 0.3, "wave"), ("PWM", 0.5, "pw"), ("Fold", 0.0, "fold"),
+    ], []),
+    ("sub", "teal", [
+        ("Sub", 0.6, "sub"), ("SubSat", 0.35, "subsat"),   # §2.5 sub saturation
+    ], [
+        # §2.5 how far down the sub sits under the note
+        ("SubOct", ["sub -1", "sub -2"], 0, "suboct", 66.0),
     ]),
-    ("sub + wet", "teal", [
-        ("Sub", 0.6, "sub"), ("SubSat", 0.35, "subsat"),  # §2.5 sub saturation
-        ("Wet", 0.3, "wet"), ("Width", 0.6, "width"),     # §3.4 stereo width
+    ("filter", "amber", [
+        ("Squelch", 0.5, "squelch", MACRO_W),
+        ("Cutoff", 0.45, "cutoff"), ("Decay", 0.5, "decay"), ("Drive", 0.35, "drive"),
+    ], [
+        # §2.1 "auto" lets the groove's own affinity weights pick the mode
+        ("Mode", ["auto", "round", "wet", "squelch", "bite",
+                  "hollow", "rubber", "acid"], 0, "fmode", 92.0),
     ]),
-    ("wobble", "amber", [
+    ("shape", "purple", [
+        ("Chunk", 0.55, "chunk", MACRO_W),
         # §2.7 one LFO, shared: rate (Hz) and a depth that swings both the
         # filter cutoff and pitch together so the movement reads as one thing
         ("WobRate", 0.35, "wobrate"), ("WobDepth", 0.0, "wobdepth"),
-    ]),
-    ("design", "purple", [
+    ], []),
+    ("space", "pink", [
+        ("Wet", 0.3, "wet", MACRO_W), ("Width", 0.6, "width"),   # §3.4 stereo width
+    ], []),
+    ("character", "gray", [
         # §2.8 how far each phrase's own sound (wave, PWM, fold, wobble, sub
-        # saturation) moves the dials above: 0 plays the dials as set
-        ("Design", 0.5, "design"),
-    ]),
+        # saturation) moves the dials on this page: 0 plays them as set. It
+        # belongs here, next to what it moves, not on the compose page.
+        ("Design", 0.5, "design", MACRO_W),
+    ], []),
 ]
 
-MENUS = [  # (parameter longname, items, initial index, js message, width)
+# §2.8 the dials a phrase's own sound pushes, and the selector on the core's
+# synth outlet that carries each one's pushed value. Every one of these is a
+# SOUND_KEY in pg-core.js; the rest of the dials above play as set, so they get
+# no ring. subsat and wobdepth each drive two selectors — one of a pair is
+# enough to recover the value, and device/pg-mod.js says how it undoes the
+# scaling on the way back.
+MOD_RINGS = [   # (dial's js message, the synth selector carrying its pushed value)
+    ("wave", "wave"), ("pw", "pw"), ("fold", "fold"),
+    ("subsat", "subdrv"), ("wobrate", "wobrate"), ("wobdepth", "wobcut"),
+]
+
+# ---- compose page: how the generator behaves, not how it sounds ----
+COMPOSE_DIALS = [  # (parameter longname, initial, js message)
+    ("Novelty", 0.45, "novelty"), ("Density", 0.5, "density"),
+    ("Interlock", 0.5, "interlock"),   # §1.4 bipolar downbeat rest bias
+]
+COMPOSE_MENUS = [  # (parameter longname, items, initial index, js message, width)
     ("Groove", ["restrained", "rolling", "syncopated",
                 "driving", "acidic", "broken", "hypnotic"], 1, "groove", 112.0),
-    # §2.1 "auto" lets the groove's own affinity weights pick the mode
-    ("Mode", ["auto", "round", "wet", "squelch", "bite",
-              "hollow", "rubber", "acid"], 0, "fmode", 92.0),
     ("Root", ["C", "Db", "D", "Eb", "E", "F",
               "Gb", "G", "Ab", "A", "Bb", "B"], 0, "root", 58.0),
     ("Length", ["1 bar", "2 bars", "4 bars"], 1, "plen", 70.0),
-    # §2.5 how far down the sub sits under the note
-    ("SubOct", ["sub -1", "sub -2"], 0, "suboct", 66.0),
 ]
 # §5.3 the global lock plus the three per-layer freezes: rhythm, pitch and
 # timbre hold independently, so one layer can drift while the others don't.
@@ -80,20 +114,85 @@ BUTTON_GROUPS = [
     ("utility", "gray", ["Capture"]),
 ]
 
-WAVE_RECT = [160.0, 100.0, 980.0, 640.0]   # floating window: x, y, w, h
+WAVE_RECT = [160.0, 100.0, 980.0, 628.0]   # sound page window: x, y, w, h
+COMP_RECT = [160.0, 100.0, 980.0, 300.0]   # compose page window, over the top
+
+
+def build_compose_page():
+    """The window's second page: how the generator behaves, rather than how it
+    sounds. Groove family, root, length and the phrase macros; the freeze
+    switches; and the buttons that reroll the phrase or a single layer of it.
+    Set once per project and then left alone, which is exactly why it is off
+    the sound page — and it is where Interlock stops reading as a tone control.
+
+
+    Same subpatcher discipline as the sound page: its controls can't patchcord
+    to the js core two patchers up, so they feed a local `outlet`, which the
+    sound page wires into its own outlet and on to js. "Sculpt" hands the page
+    back by closing this window with [thispatcher], uncovering the sound page
+    underneath — no scripting, nothing to keep in sync.
+    """
+    cp = Patch("instrument")
+    _, _, cw, ch = COMP_RECT
+    cp.panel("bg", pres=[0.0, 0.0, cw, ch],
+             bgcolor=[0.086, 0.086, 0.094, 1.0], bordercolor=[0.086, 0.086, 0.094, 1.0],
+             rounded=0)
+    cp.box("in1", "inlet", numinlets=0, numoutlets=1, outlettype=[""],
+           extra={"patching_rect": [20.0, 20.0, 30.0, 30.0], "comment": "pcontrol target"})
+    cp.box("ctrl_out", "outlet", numinlets=1, numoutlets=0,
+           extra={"patching_rect": [60.0, 20.0, 30.0, 30.0], "comment": "control messages out"})
+
+    cp.box("title", "comment", "COMPOSE", pres=[8.0, 8.0, 400.0, 20.0],
+           extra={"fontface": 1, "fontsize": 15.0, "textcolor": [0.92, 0.92, 0.92, 1.0]},
+           numoutlets=0)
+    cp.box("subtitle", "comment", "what gets played — set once, then left alone",
+           pres=[8.0, 27.0, 480.0, 14.0],
+           extra={"fontsize": 10.0, "textcolor": [0.55, 0.55, 0.55, 1.0]}, numoutlets=0)
+
+    row1 = ui.Row(cp, y=66.0, h=58.0, panel_top=46.0, panel_h=124.0, gap=30.0)
+    row1.stage("phrase", "gray", COMPOSE_DIALS, COMPOSE_MENUS, pitch=72.0, w=60.0)
+    row2 = ui.Row(cp, y=196.0, h=20.0, panel_top=178.0, panel_h=40.0, gap=24.0)
+    row2.toggles("freeze", "pink", TOGGLES)
+    for label, ramp, names in BUTTON_GROUPS:
+        row2.buttons(label, ramp, names)
+
+    core.wire_controls(cp, row1.sources + row2.sources, row2.button_keys, dst="ctrl_out")
+
+    # Back to the sound page: close this window and the one it covers is there.
+    ui.section(cp, "page_back", "PAGE", "teal", [830.0, 46.0, 122.0, 124.0])
+    # "Sculpt", not "Sound" — the reroll button two panels to the left is
+    # already called Sound, and these two do very different things.
+    cp.box("btn_sculpt", "message", "Sculpt", pres=[842.0, 78.0, 98.0, 24.0],
+           extra={"fontsize": 11.0}, numinlets=2, numoutlets=1)
+    cp.box("page_back_hint", "comment", "back to the voice",
+           pres=[842.0, 108.0, 104.0, 26.0],
+           extra={"fontsize": 9.0, "textcolor": [0.55, 0.55, 0.55, 1.0]}, numoutlets=0)
+    cp.box("msg_wclose", "message", "wclose", numinlets=2, numoutlets=1)
+    cp.obj("this_p", "thispatcher", numinlets=1, numoutlets=1, outlettype=[""])
+    cp.connect("btn_sculpt", 0, "msg_wclose", 0)
+    cp.connect("msg_wclose", 0, "this_p", 0)
+    return cp
 
 
 def build_wave_window():
-    """The Serum-style sound-design window: a big hero waveform up top, the
-    device's full control set below in roomy sectioned panels. It opens as
-    an independent floating OS window, not confined to Live's 169 px rack
-    cap — that cap only applies to the top-level device patcher (see
+    """The sound page: the step lane up top with the waveform under it, and the
+    voice below laid out in signal order — OSC, SUB, FILTER, SHAPE, SPACE, then
+    CHARACTER, each stage a panel where it sits in the audio path. The §6 meta
+    control of a stage leads it at MACRO_W, so the four dials that carry the
+    sound read first and the per-stage dials sit under the stage they belong to.
+
+    It opens as an independent floating OS window, not confined to Live's 169 px
+    rack cap — that cap only applies to the top-level device patcher (see
     Patch.subpatcher() in m4lkit/patch.py).
 
     Controls here can't patchcord straight to the js core in the parent
     patcher — a subpatcher is its own box graph. Each control instead feeds
     a local `outlet` box (ctrl_out), which becomes a real outlet on the
     subpatcher box in the parent, wired there to js like any other source.
+    The same rule runs the other way for the step lane: it reads the core's
+    phrase outlet through a local `inlet` box (in3), fed in the parent. The
+    compose page nests one level deeper and sends its controls out through
+    this same outlet.
     """
     wp = Patch("instrument")
     _, _, ww, wh = WAVE_RECT
@@ -105,40 +204,83 @@ def build_wave_window():
            extra={"patching_rect": [20.0, 20.0, 30.0, 30.0], "comment": "(signal) audio in"})
     wp.box("in2", "inlet", numinlets=0, numoutlets=1, outlettype=[""],
            extra={"patching_rect": [60.0, 20.0, 30.0, 30.0], "comment": "pcontrol target"})
+    wp.box("in3", "inlet", numinlets=0, numoutlets=1, outlettype=[""],
+           extra={"patching_rect": [100.0, 20.0, 30.0, 30.0], "comment": "phrase + steps"})
+    wp.box("in4", "inlet", numinlets=0, numoutlets=1, outlettype=[""],
+           extra={"patching_rect": [140.0, 20.0, 30.0, 30.0],
+                  "comment": "synth values, as modulated"})
     wp.box("ctrl_out", "outlet", numinlets=1, numoutlets=0,
-           extra={"patching_rect": [100.0, 20.0, 30.0, 30.0], "comment": "control messages out"})
+           extra={"patching_rect": [180.0, 20.0, 30.0, 30.0], "comment": "control messages out"})
 
     wp.box("title", "comment", "PG BASS GENERATOR",
            pres=[8.0, 8.0, 600.0, 20.0],
            extra={"fontface": 1, "fontsize": 15.0, "textcolor": [0.92, 0.92, 0.92, 1.0]},
            numoutlets=0)
-    wp.box("subtitle", "comment", "live waveform · sound design",
+    wp.box("subtitle", "comment", "step lane · waveform · the voice in signal order",
            pres=[8.0, 27.0, 600.0, 14.0],
            extra={"fontsize": 10.0, "textcolor": [0.55, 0.55, 0.55, 1.0]}, numoutlets=0)
 
-    wp.box("bigscope", "scope~", pres=[8.0, 44.0, 944.0, 230.0],
+    # The hero: what the generator just wrote, drawn (DESIGN.md §5). The
+    # waveform keeps its place underneath — it reports the sound, the lane
+    # reports the notes, and Mutate is only legible with both.
+    wp.box("lane", "jsui", pres=[8.0, 46.0, 944.0, 140.0],
+           extra={"filename": "pg-lane.js", "jsarguments": ["window"],
+                  "border": 0, "parameter_enable": 0},
+           numinlets=1, numoutlets=1)
+    wp.connect("in3", 0, "lane", 0)
+
+    wp.box("bigscope", "scope~", pres=[8.0, 194.0, 944.0, 56.0],
            extra={"bgcolor": [0.02, 0.02, 0.02, 1.0], "bufsize": 4096},
            numinlets=1, numoutlets=0)
     wp.connect("in1", 0, "bigscope", 0)
 
-    row1 = ui.Row(wp, y=306.0, h=58.0, panel_top=286.0, panel_h=86.0, gap=18.0)
-    for label, ramp, group in DIAL_GROUPS[:2]:          # macro, tone
-        row1.dials(label, ramp, group, pitch=72.0, w=60.0)
+    # Signal order, left to right and top to bottom. `y`/`h` size an ordinary
+    # dial; a MACRO_W one grows upward from the shared bottom edge, which is
+    # why each panel starts well above its row.
+    row1 = ui.Row(wp, y=316.0, h=70.0, panel_top=262.0, panel_h=154.0, gap=30.0)
+    for label, ramp, dials, menus in STAGES[:3]:        # osc, sub, filter
+        row1.stage(label, ramp, dials, menus, pitch=88.0, w=72.0)
 
-    row2 = ui.Row(wp, y=404.0, h=58.0, panel_top=384.0, panel_h=86.0, gap=18.0)
-    for label, ramp, group in DIAL_GROUPS[2:]:          # sub + wet, wobble, design
-        row2.dials(label, ramp, group, pitch=72.0, w=60.0)
+    row2 = ui.Row(wp, y=482.0, h=70.0, panel_top=428.0, panel_h=132.0, gap=30.0)
+    for label, ramp, dials, menus in STAGES[3:]:        # shape, space, character
+        row2.stage(label, ramp, dials, menus, pitch=88.0, w=72.0)
 
-    row3 = ui.Row(wp, y=500.0, h=20.0, panel_top=482.0, panel_h=40.0, gap=18.0)
-    row3.menus("identity", "amber", MENUS)
-    row3.toggles("freeze", "pink", TOGGLES)
+    # §2.8 made visible: one click-through [jsui] per row, drawing each phrase's
+    # pushed value as a second ring inside the dial it moved (DESIGN.md §5.5).
+    # Per row rather than one box over both, so neither overlay ever reaches a
+    # menu or a button — it spans only the dials between its first and last
+    # ring. Both take the core's synth outlet whole; pg-mod.js picks out the
+    # six selectors it rings and ignores the rest.
+    for n, row in ((1, row1), (2, row2)):
+        rings = [(sel, msg) for msg, sel in MOD_RINGS if msg in row.dial_rects]
+        if rings:
+            wp.connect("in4", 0, row.overlay("mod%d" % n, "pg-mod.js", rings), 0)
 
-    row4 = ui.Row(wp, y=552.0, h=20.0, panel_top=534.0, panel_h=40.0, gap=18.0)
-    for label, ramp, names in BUTTON_GROUPS:
-        row4.buttons(label, ramp, names)
+    core.wire_controls(wp, row1.sources + row2.sources, dst="ctrl_out")
 
-    sources = row1.sources + row2.sources + row3.sources
-    core.wire_controls(wp, sources, row4.button_keys, dst="ctrl_out")
+    # ---- the compose page, nested one level deeper ----
+    # Same idiom the parent uses to open this window: a hidden [open] behind a
+    # visible button, into a [pcontrol] whose outlet names the patcher box it
+    # opens — here the compose page's only inlet, which nothing else feeds.
+    comp_p = build_compose_page()
+    wp.subpatcher("comp_window", "p comp_window", comp_p,
+                  rect=COMP_RECT, varname="comp_window",
+                  title="PG Bass Generator — Compose",
+                  numinlets=1, numoutlets=1, openinpresentation=1)
+    wp.connect("comp_window", 0, "ctrl_out", 0)
+    wp.obj("pctrl_comp", "pcontrol", numinlets=1, numoutlets=1, outlettype=[""])
+    wp.connect("pctrl_comp", 0, "comp_window", 0)
+
+    ui.section(wp, "page_fwd", "PAGE", "teal", [692.0, 428.0, 260.0, 132.0])
+    wp.box("btn_compose", "message", "Compose", pres=[704.0, 462.0, 110.0, 24.0],
+           extra={"fontsize": 11.0}, numinlets=2, numoutlets=1)
+    wp.box("page_fwd_hint", "comment",
+           "groove · root · length · interlock · freeze · reroll",
+           pres=[704.0, 494.0, 236.0, 26.0],
+           extra={"fontsize": 9.0, "textcolor": [0.55, 0.55, 0.55, 1.0]}, numoutlets=0)
+    wp.box("msg_comp_open", "message", "open", numinlets=2, numoutlets=1)
+    wp.connect("btn_compose", 0, "msg_comp_open", 0)
+    wp.connect("msg_comp_open", 0, "pctrl_comp", 0)
     return wp
 
 
@@ -149,15 +291,15 @@ def build(kind="instrument"):
     # The full control set above lives in the floating sound-design window
     # now (build_wave_window) — Live's 169 px device-height cap applies only
     # to this top-level patcher, not to a subpatcher's own floating window.
-    # The rack keeps just the essentials: title, live status text, a
-    # waveform strip for an at-a-glance read, and the button that opens the
-    # big window (wired further down, once `js` and `folded` exist).
+    # The rack keeps just the essentials: title, live status text, the step
+    # lane that fills the rest of it, and the button that opens the big
+    # window (wired further down, once `js` exists).
     p.box("title", "comment", "PG BASS GENERATOR — Primordial Groove",
           pres=[4.0, 3.0, 260.0, 16.0],
           extra={"fontface": 1, "fontsize": 11.0}, numoutlets=0)
 
     # ---------------------------------------------------------------- core + clock
-    p.obj("js", "js pg-core.js", numinlets=1, numoutlets=3)
+    p.obj("js", "js pg-core.js", numinlets=1, numoutlets=4)
     core.clock(p)
 
     # ---------------------------------------------------------------- js outlet routing
@@ -188,8 +330,25 @@ def build(kind="instrument"):
     p.connect("js", 0, synth.key, 0)
     p.connect("js", 1, note.key, 0)
     p.connect("js", 2, disp.key, 0)
+    # Outlet 3 (phrase + steps) goes straight to the lanes, unrouted: [route]
+    # strips the selector it matched, and the lane needs those names to tell a
+    # header from a grid. One outlet, two readers — the rack strip here and,
+    # on the instrument build, the hero lane in the floating window.
     core.status_display(p, disp, pres=[352.0, 3.0, 252.0, 16.0])
-    core.persist_state(p, synth, pattr="pg_state")   # §5.4
+    core.persist_state(p, synth, pattr="pg_state")   # saved with the Live set
+
+    # The rack's one display, and the reason the device needs no scope here:
+    # what the generator just wrote, drawn. It replaces the waveform strip
+    # that used to fill this space — the waveform reports the sound, which the
+    # sound-design window still shows in full, while the notes are what Mutate
+    # and the four layer rerolls actually change (DESIGN.md §5.4). Both builds
+    # get it: on the MIDI build, where there is no audio to scope at all, it is
+    # the only readout there could be.
+    p.box("lane", "jsui", pres=[8.0, 24.0, 952.0, 138.0],
+          extra={"filename": "pg-lane.js", "jsarguments": ["rack"],
+                 "border": 0, "parameter_enable": 0},
+          numinlets=1, numoutlets=1)
+    p.connect("js", 3, "lane", 0)
 
     # The MIDI-effect build shares everything above — same core, same UI, same
     # persisted state — and swaps the entire synth below for a [midiout].
@@ -264,16 +423,11 @@ def build(kind="instrument"):
     # §2.6 wavefolder on the oscillator mix, crossfaded in by Fold
     folded = dsp.wavefolder(p, "fold", "osc_mix", "l_fold")
 
-    # a waveform monitor tapped right here, post-Wave/PWM/Fold, so the three
-    # timbre controls' combined shape is visible without leaving the device.
-    # With the full control set relocated to the floating window, the rack
-    # has room for a much taller quick-glance strip under Live's 169 px cap.
-    # bufsize 4096 (~93 ms at 44.1k) keeps a few cycles on screen even at the
-    # lowest sub-bass notes (~30 Hz).
-    p.box("scope", "scope~", pres=[8.0, 24.0, 952.0, 138.0],
-          extra={"bgcolor": [0.078, 0.078, 0.078, 1.0], "bufsize": 4096},
-          numinlets=1, numoutlets=0)
-    p.connect(folded, 0, "scope", 0)
+    # The waveform tap, post-Wave/PWM/Fold, so the three timbre controls'
+    # combined shape is visible. It goes to the sound-design window rather
+    # than the rack now: the rack's 169 px hold the step lane, and a player
+    # who wants to see the shape they are sculpting is already in the window
+    # with the controls that sculpt it.
 
     # the full Serum-style sound-design window: hero waveform + every
     # control, sectioned. Not confined to Live's 169 px rack — that cap only
@@ -285,9 +439,11 @@ def build(kind="instrument"):
     p.subpatcher("wave_window", "p wave_window", wave_p,
                  rect=WAVE_RECT, varname="wave_window",
                  title="PG Bass Generator — Sound Design",
-                 numinlets=2, numoutlets=1, openinpresentation=1)
+                 numinlets=4, numoutlets=1, openinpresentation=1)
     p.connect(folded, 0, "wave_window", 0)
     p.connect("wave_window", 0, "js", 0)
+    p.connect("js", 3, "wave_window", 2)
+    p.connect("js", 0, "wave_window", 3)   # the synth stream, for the mod rings
     # pcontrol takes no creation arguments and has no @target attribute — it
     # opens/closes whatever patcher/subpatcher box is patched into its
     # outlet, so the open/close command reaches wave_window via a real
