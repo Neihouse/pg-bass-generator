@@ -1683,15 +1683,18 @@ test("the lane draws one body per onset, in accent or plain colour", function ()
   assert(bodies.length - amber === onsets - accents, "a plain note drew in neither colour");
 });
 
-test("the lane draws a slide only where one leads to a following note", function () {
+test("the lane draws a slide back to the note it glides from", function () {
   var sb = makeSandbox();
   call(sb, "pushall");
   var p = lastPhrase(sb), ops = drawPhrase(sb).ops;
 
+  // slides[s] means s is slid *into* from the onset before it, which is how
+  // fireStep() ties the two notes together. So a slide is drawn backwards, and
+  // the phrase's first onset has nothing behind it to be drawn from.
   var joinable = 0;
   for (var s = 0; s < p.steps; s++) {
     if (!(p.lane.flags[s] & 1) || !(p.lane.flags[s] & 4)) continue;
-    for (var t = s + 1; t < p.steps; t++) {
+    for (var t = s - 1; t >= 0; t--) {
       if (p.lane.flags[t] & 1) { joinable++; break; }
     }
   }
@@ -1699,9 +1702,7 @@ test("the lane draws a slide only where one leads to a following note", function
     return o.op === "stroke" && o.points.length === 2;
   });
   assert(lines.length === joinable,
-    "drew " + lines.length + " slides for " + joinable + " that reach a next note");
-  // the last slide of a phrase has nothing to glide to, and must not be drawn
-  // off the end of the grid
+    "drew " + lines.length + " slides for " + joinable + " that glide from a note");
   lines.forEach(function (o) {
     assert(o.x1 <= LANE_W, "a slide ran past the right edge, to x " + o.x1);
   });
@@ -1850,6 +1851,262 @@ test("Mutate changes what the lane draws", function () {
   var before = shape();
   for (var i = 0; i < 6 && shape() === before; i++) { call(sb, "Mutate"); tickSteps(sb, 32); }
   assert(shape() !== before, "six mutations later the lane draws the same phrase");
+});
+
+// ------------------------------------------------------- editing the lane
+
+// A gesture, as Max delivers one: onclick on the way down, ondrag while the
+// button is held, and one last ondrag with button 0 on release — which is the
+// call that turns a gesture into a message. Nothing leaves the lane before it.
+function press(lane, x, y, shift) {
+  callArgs(lane, "onclick", [x, y, 1, 0, shift ? 1 : 0]);
+}
+function release(lane, x, y, shift) {
+  callArgs(lane, "ondrag", [x, y, 0, 0, shift ? 1 : 0]);
+}
+function clickAt(lane, x, y, shift) {
+  press(lane, x, y, shift);
+  release(lane, x, y, shift);
+}
+function dragTo(lane, x0, y0, x1, y1) {
+  press(lane, x0, y0, false);
+  callArgs(lane, "ondrag", [(x0 + x1) / 2, (y0 + y1) / 2, 1, 0, 0]);
+  callArgs(lane, "ondrag", [x1, y1, 1, 0, 0]);
+  release(lane, x1, y1, false);
+}
+
+// Where the lane drew each onset, so a test can aim at a note the way a player
+// does — by pointing at it — instead of recomputing the script's geometry and
+// then testing that arithmetic against itself. notes() paints in step order,
+// so the bodies come back in the order the onsets do.
+function laneView(sb, make) {
+  var d = drawPhrase(sb, make);
+  d.steps = onsetSteps(lastPhrase(sb));
+  d.at = noteBodies(d.ops).map(function (o) {
+    return { x: (o.x + o.x1) / 2, y: (o.y + o.y1) / 2, top: o.y, bottom: o.y1 };
+  });
+  return d;
+}
+function onsetSteps(p) {
+  var out = [];
+  for (var s = 0; s < p.steps; s++) if (p.lane.flags[s] & 1) out.push(s);
+  return out;
+}
+// the one message a gesture is allowed to send, checked as one
+function onlyEdit(lane) {
+  var out = mt.sent(lane, 0);
+  assert(out.length === 1, "a gesture sent " + out.length + " messages, not one");
+  assert(out[0][0] === "stepedit", "a gesture sent \"" + out[0][0] + "\"");
+  return out[0];
+}
+// the lane is a control as well as a display: what it sends goes straight back
+// into the core, which is the only thing that may change a phrase
+function apply(sb, msg) { callArgs(sb, "stepedit", msg.slice(1)); }
+
+test("a click on a note toggles its accent and rewrites its velocity", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var before = lastPhrase(sb), v = laneView(sb);
+  var i = 0;
+  while (i < v.steps.length && (before.lane.flags[v.steps[i]] & 2)) i++;
+  assert(i < v.steps.length, "this phrase has no plain note to accent");
+  var s = v.steps[i];
+
+  clickAt(v.sb, v.at[i].x, v.at[i].y, false);
+  var msg = onlyEdit(v.sb);
+  assert(msg[1] === "accent" && msg[2] === s,
+    "a plain click should be an accent on step " + s + ", got " + msg.join(" "));
+
+  apply(sb, msg);
+  var after = lastPhrase(sb);
+  assert(after.lane.flags[s] & 2, "the accent did not go on");
+  // genStepMeta()'s accent band, so an edited note sits where a generated one would
+  assert(after.lane.vel[s] >= 112 && after.lane.vel[s] <= 124,
+    "an accented step's velocity left the accent band: " + after.lane.vel[s]);
+
+  // and back off again, onto the plain band rather than the ghost one
+  var v2 = laneView(sb), j = v2.steps.indexOf(s);
+  clickAt(v2.sb, v2.at[j].x, v2.at[j].y, false);
+  apply(sb, onlyEdit(v2.sb));
+  var back = lastPhrase(sb);
+  assert(!(back.lane.flags[s] & 2), "the accent did not come off");
+  assert(back.lane.vel[s] >= 82 && back.lane.vel[s] <= 100,
+    "an un-accented step should land on the plain band, not the ghost one: " + back.lane.vel[s]);
+});
+
+test("shift-click toggles the slide into a note, and the first onset refuses", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var v = laneView(sb);
+  assert(v.steps.length >= 2, "this phrase has only one onset");
+  var s = v.steps[1], on = !!(lastPhrase(sb).lane.flags[s] & 4);
+
+  clickAt(v.sb, v.at[1].x, v.at[1].y, true);
+  var msg = onlyEdit(v.sb);
+  assert(msg[1] === "slide" && msg[2] === s,
+    "a shift-click should be a slide on step " + s + ", got " + msg.join(" "));
+
+  apply(sb, msg);
+  var after = lastPhrase(sb);
+  assert(!!(after.lane.flags[s] & 4) === !on, "the slide did not toggle");
+  if (!on) {
+    assert(r3(after.lane.gate[s]) === 1.02,
+      "a slid step should hold past its own length, gate was " + after.lane.gate[s]);
+  }
+
+  // the phrase's first note is slid into from nothing, so the core refuses it
+  // and never re-emits — the lane's optimism simply never comes back
+  var v2 = laneView(sb), emitted = collect(sb, 3, "phrase").length;
+  clickAt(v2.sb, v2.at[0].x, v2.at[0].y, true);
+  var first = onlyEdit(v2.sb);
+  assert(first[2] === v.steps[0], "the shift-click missed the first onset");
+  apply(sb, first);
+  assert(collect(sb, 3, "phrase").length === emitted,
+    "a slide on the first onset was accepted");
+});
+
+test("dragging a note moves it in time and pitch, carrying its own lanes", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var before = lastPhrase(sb), v = laneView(sb);
+
+  // how far a semitone is, measured off the drawing rather than recomputed from
+  // the script's own constants: two onsets at different pitches give the scale,
+  // and a body's centre is yOf(pitch) whether or not the note is accented
+  var semi = 0, lo = v.steps[0];
+  for (var a = 0; a < v.steps.length; a++) {
+    if (before.lane.pitch[v.steps[a]] < before.lane.pitch[lo]) lo = v.steps[a];
+    for (var b = a + 1; b < v.steps.length; b++) {
+      var dp = before.lane.pitch[v.steps[b]] - before.lane.pitch[v.steps[a]];
+      if (dp) semi = Math.abs(v.at[b].y - v.at[a].y) / Math.abs(dp);
+    }
+  }
+  assert(semi > 0, "this phrase is a pedal tone, so the lane has no pitch scale");
+
+  // the lowest note with a free column two steps to its right: low, so there is
+  // room above it inside both the drawn span and the core's range
+  var i = -1;
+  for (var k = 0; k < v.steps.length; k++) {
+    var to = v.steps[k] + 2;
+    if (to >= before.steps || (before.lane.flags[to] & 1)) continue;
+    if (i < 0 || before.lane.pitch[v.steps[k]] < before.lane.pitch[v.steps[i]]) i = k;
+  }
+  assert(i >= 0, "this phrase has no note with a free column after it");
+  var s = v.steps[i], dest = s + 2, up = before.lane.pitch[s] + 2;
+
+  var cw = (LANE_W - 20 * 2) / before.steps;          // PAD_X from pg-lane.js
+  dragTo(v.sb, v.at[i].x, v.at[i].y, v.at[i].x + cw * 2, v.at[i].y - semi * 2);
+  var msg = onlyEdit(v.sb);
+  assert(msg[1] === "move" && msg[2] === s && msg[3] === dest,
+    "the drag should move step " + s + " to " + dest + ", got " + msg.join(" "));
+  assert(msg[4] === up,
+    "two semitones of travel should read as pitch " + up + ", got " + msg[4]);
+
+  apply(sb, msg);
+  var after = lastPhrase(sb);
+  assert(!(after.lane.flags[s] & 1), "the note did not leave its old column");
+  assert(after.lane.flags[dest] & 1, "the note did not arrive in the new one");
+  assert(after.lane.pitch[dest] === msg[4],
+    "the note landed on pitch " + after.lane.pitch[dest] + ", not the " + msg[4] + " asked for");
+  // everything a step carries travels with it: a move is not a re-roll
+  ["vel", "gate", "prob", "timbre", "wet", "micro"].forEach(function (k) {
+    assert(r3(after.lane[k][dest]) === r3(before.lane[k][s]),
+      "a move dropped the step's " + k + ": " + before.lane[k][s] + " -> " + after.lane[k][dest]);
+  });
+  assert((after.lane.flags[dest] & 2) === (before.lane.flags[s] & 2), "a move dropped the accent");
+});
+
+test("a move onto an occupied column is refused, and one off the end is too", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb), ons = onsetSteps(p);
+  assert(ons.length >= 2, "this phrase has only one onset");
+  var emitted = collect(sb, 3, "phrase").length;
+
+  callArgs(sb, "stepedit", ["move", ons[0], ons[1], p.lane.pitch[ons[0]]]);
+  callArgs(sb, "stepedit", ["move", ons[0], p.steps, p.lane.pitch[ons[0]]]);
+  callArgs(sb, "stepedit", ["move", ons[0], -1, p.lane.pitch[ons[0]]]);
+  callArgs(sb, "stepedit", ["move", ons[0], ons[0] + 1]);   // no pitch at all
+  callArgs(sb, "stepedit", ["accent", -1]);
+  callArgs(sb, "stepedit", ["slide", p.steps + 3]);
+  callArgs(sb, "stepedit", ["nonsense", ons[0]]);
+  assert(collect(sb, 3, "phrase").length === emitted,
+    "a refused edit still re-emitted the phrase");
+  assert(JSON.stringify(lastPhrase(sb).flat) === JSON.stringify(p.flat),
+    "a refused edit changed the phrase anyway");
+});
+
+test("a moved note keeps the slide invariant at the front of the phrase", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var p = lastPhrase(sb), ons = onsetSteps(p);
+  assert(ons.length >= 2, "this phrase has only one onset");
+
+  // make the second note slide, then move the first one behind it: the slid
+  // note is now the phrase's first, with nothing to glide from
+  if (!(p.lane.flags[ons[1]] & 4)) callArgs(sb, "stepedit", ["slide", ons[1]]);
+  p = lastPhrase(sb);
+  assert(p.lane.flags[ons[1]] & 4, "could not get a slide onto the second note");
+
+  var free = -1;
+  for (var t = ons[1] + 1; t < p.steps; t++) if (!(p.lane.flags[t] & 1)) { free = t; break; }
+  assert(free > 0, "this phrase has no free column after its second note");
+  callArgs(sb, "stepedit", ["move", ons[0], free, p.lane.pitch[ons[0]]]);
+
+  var after = lastPhrase(sb);
+  assert(onsetSteps(after)[0] === ons[1], "the move did not promote the slid note");
+  assert(!(after.lane.flags[ons[1]] & 4),
+    "the phrase's first note is slid into from nothing");
+  assert(r3(after.lane.gate[ons[1]]) !== 1.02,
+    "the freed note kept a slide's gate: " + after.lane.gate[ons[1]]);
+});
+
+test("a drag sends one message however far it travels, and only on release", function () {
+  var sb = makeSandbox();
+  call(sb, "pushall");
+  var v = laneView(sb);
+  press(v.sb, v.at[0].x, v.at[0].y, false);
+  for (var i = 1; i <= 12; i++) {
+    callArgs(v.sb, "ondrag", [v.at[0].x + i * 5, v.at[0].y + i, 1, 0, 0]);
+  }
+  assert(mt.sent(v.sb, 0).length === 0, "the lane sent an edit mid-drag");
+  release(v.sb, v.at[0].x + 60, v.at[0].y + 12, false);
+  assert(mt.sent(v.sb, 0).length === 1, "a drag sent more than one message");
+
+  // and a press that goes nowhere near a note is not a gesture at all
+  var v2 = laneView(sb);
+  clickAt(v2.sb, 2, 2, false);
+  assert(mt.sent(v2.sb, 0).length === 0, "clicking empty space sent an edit");
+});
+
+test("both lanes send their edits back to the core", function () {
+  assert(mt.jsHandlers(CORE).indexOf("stepedit") >= 0,
+    "pg-core.js has no stepedit handler for the lane to talk to");
+
+  var patch = mt.readPatch(PATCH);
+  var core = patch.boxes.filter(function (b) {
+    return String(b.box.text || "").indexOf("js pg-core.js") === 0;
+  })[0];
+  assert(core, "no core box in the built device");
+
+  // the rack lane goes straight back in
+  var rack = mt.jsuiBoxes(patch).filter(function (j) { return j.args[0] === "rack"; })[0];
+  var direct = mt.feeders(patch, core.box.id).filter(function (f) { return f.id === rack.id; });
+  assert(direct.length === 1 && direct[0].inlet === 0,
+    "the rack lane's edits do not reach the core's inlet");
+
+  // the window's copy is a subpatcher deeper, so it leaves through the same
+  // ctrl_out every other control in that window uses
+  var sub = patch.boxes.filter(function (b) { return b.box.varname === "wave_window"; })[0];
+  var win = mt.jsuiBoxes(sub.box.patcher).filter(function (j) { return j.args[0] === "window"; })[0];
+  var outs = sub.box.patcher.boxes.filter(function (b) { return b.box.maxclass === "outlet"; });
+  var reaches = outs.filter(function (o) {
+    return mt.feeders(sub.box.patcher, o.box.id).some(function (f) { return f.id === win.id; });
+  });
+  assert(reaches.length === 1, "the window lane's edits reach no subpatcher outlet");
+  var up = mt.feeders(patch, core.box.id).filter(function (f) { return f.id === sub.box.id; });
+  assert(up.length === 1 && up[0].inlet === 0,
+    "the window subpatcher's control outlet does not reach the core");
 });
 
 // ---------------------------------------------------------------- the test sandbox
@@ -2077,12 +2334,20 @@ test("the MIDI build gets the same rack lane", function () {
   assert(feeds.length === 1 && feeds[0].text === "js pg-core.js" && feeds[0].outlet === 3,
     "the MIDI build's lane is not fed by the phrase outlet: " + JSON.stringify(feeds));
 
+  // and edits go back, the same as in the instrument: this build has no window,
+  // so the rack strip is the only place its notes can be corrected at all
+  var core = patch.boxes.filter(function (b) {
+    return String(b.box.text || "").indexOf("js pg-core.js") === 0;
+  })[0];
+  var back = mt.feeders(patch, core.box.id).filter(function (f) { return f.id === lanes[0].id; });
+  assert(back.length === 1 && back[0].inlet === 0,
+    "the MIDI build's lane cannot send a stepedit back to the core");
+
   var sb = makeSandbox();
   call(sb, "pushall");
   tickSteps(sb, 32);
   var emitted = mt.emittedSelectors(sb, 3);
   mt.jsuiHandlers(patch, DEVICE).forEach(function (h) {
-    if (h === "paint") return;
     assert(emitted.indexOf(h) >= 0,
       "the MIDI build's lane waits on \"" + h + "\" but the core never sends it");
   });
@@ -2500,7 +2765,11 @@ test("a ring overlay lets the dial under it take the mouse", function () {
     // of defence rather than the only one
     boxes.forEach(function (b) {
       if (!b.presentation_rect) return;
-      var clickable = String(b.maxclass).indexOf("live.") === 0 || b.maxclass === "message";
+      // a jsui that has not given the mouse away is a control like any other:
+      // the step lane answers clicks, so an overlay must not land on top of it
+      var clickable = String(b.maxclass).indexOf("live.") === 0 ||
+                      b.maxclass === "message" ||
+                      (b.maxclass === "jsui" && b.ignoreclick !== 1);
       if (!clickable || b.maxclass === "live.dial") return;
       assert(!overlaps(j.rect, b.presentation_rect),
         "a ring overlay covers a " + b.maxclass + " at " + b.presentation_rect.join(","));

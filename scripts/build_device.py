@@ -189,10 +189,12 @@ def build_wave_window():
     patcher — a subpatcher is its own box graph. Each control instead feeds
     a local `outlet` box (ctrl_out), which becomes a real outlet on the
     subpatcher box in the parent, wired there to js like any other source.
-    The same rule runs the other way for the step lane: it reads the core's
-    phrase outlet through a local `inlet` box (in3), fed in the parent. The
-    compose page nests one level deeper and sends its controls out through
-    this same outlet.
+    The step lane runs both ways and needs one of each: it reads the core's
+    phrase outlet through a local `inlet` box (in3), fed in the parent, and
+    sends its step edits back out through ctrl_out like any other control —
+    which is what it is, once a click on it can change a note. The compose
+    page nests one level deeper and sends its controls out through this same
+    outlet.
     """
     wp = Patch("instrument")
     _, _, ww, wh = WAVE_RECT
@@ -228,6 +230,7 @@ def build_wave_window():
                   "border": 0, "parameter_enable": 0},
            numinlets=1, numoutlets=1)
     wp.connect("in3", 0, "lane", 0)
+    wp.connect("lane", 0, "ctrl_out", 0)      # stepedit, back to the core
 
     wp.box("bigscope", "scope~", pres=[8.0, 194.0, 944.0, 56.0],
            extra={"bgcolor": [0.02, 0.02, 0.02, 1.0], "bufsize": 4096},
@@ -349,6 +352,10 @@ def build(kind="instrument"):
                  "border": 0, "parameter_enable": 0},
           numinlets=1, numoutlets=1)
     p.connect("js", 3, "lane", 0)
+    # ...and back the other way: a click on a note is a stepedit for the core,
+    # so the display is also a control. The window's copy takes the same trip
+    # through its subpatcher outlet.
+    p.connect("lane", 0, "js", 0)
 
     # The MIDI-effect build shares everything above — same core, same UI, same
     # persisted state — and swaps the entire synth below for a [midiout].

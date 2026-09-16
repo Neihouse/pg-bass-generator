@@ -259,6 +259,15 @@ function paint(sb) {
   return sb.__draw.ops;
 }
 
+// What a [jsui] has pushed out of its own outlet, each message as it left and
+// in order — the other direction from paint(). A display that is also a control
+// answers for both, and this is the half a mouse handler writes.
+function sent(sb, outletIdx) {
+  return sb.__draw.out.filter(function (m) {
+    return outletIdx === undefined || m[0] === outletIdx;
+  }).map(function (m) { return m.slice(1); });
+}
+
 // the ops whose colour matches, within tol — how a test names "the amber ones"
 function opsColored(ops, rgb, tol) {
   tol = tol === undefined ? 0.02 : tol;
@@ -419,10 +428,23 @@ function jsuiHandlers(patcher, dir) {
   var names = {};
   jsuiBoxes(patcher).forEach(function (j) {
     if (!j.filename) return;
-    jsHandlers(scriptPath(dir, j.filename)).forEach(function (n) { names[n] = true; });
+    jsHandlers(scriptPath(dir, j.filename)).forEach(function (n) {
+      if (JSUI_CALLBACKS.indexOf(n) < 0) names[n] = true;
+    });
   });
   return Object.keys(names);
 }
+
+// The top-level names in a [jsui] script that are not messages at all. Max
+// calls these itself — when the box has to redraw, when the mouse is over it,
+// when it is resized — so they arrive from the window, never from a patchcord,
+// and a test asking what selectors a display consumes must not count them as
+// handlers waiting on a stream that will never carry them.
+var JSUI_CALLBACKS = [
+  "paint", "onresize", "onclick", "ondrag", "ondblclick", "onidle", "onidleout",
+  "onmouseup", "onmousewheel", "onmouseenter", "onmouseleave", "onmousemove",
+  "onkey", "onkeyup", "onfocus", "onblur", "forcecloseevent"
+];
 
 // The message names one script answers to, on its own. Same rule as above: a
 // top-level function is a handler unless the script marks it `f.local = 1`.
@@ -534,11 +556,11 @@ function runner(title) {
 }
 
 module.exports = {
-  loadCore: loadCore, loadJsui: loadJsui, paint: paint, opsColored: opsColored,
+  loadCore: loadCore, loadJsui: loadJsui, paint: paint, sent: sent, opsColored: opsColored,
   call: call, callArgs: callArgs, evalIn: evalIn, hasHandler: hasHandler, tick: tick,
   collect: collect, collectTimed: collectTimed, last: last, emittedSelectors: emittedSelectors,
   readPatch: readPatch, routedSelectors: routedSelectors, patchControls: patchControls,
   jsuiHandlers: jsuiHandlers, jsHandlers: jsHandlers, jsuiBoxes: jsuiBoxes,
-  MAX_JS_GLOBALS: MAX_JS_GLOBALS, feeders: feeders,
+  MAX_JS_GLOBALS: MAX_JS_GLOBALS, JSUI_CALLBACKS: JSUI_CALLBACKS, feeders: feeders,
   runner: runner
 };

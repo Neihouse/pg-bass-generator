@@ -102,10 +102,31 @@ automation and mappings in Live Sets already saved against it.
 | REGENERATE LAYER | **Sound** | Redraw the phrase's sound and filter mode from the groove, keeping every note, accent and slide. |
 | UTILITY | **Capture** | Write the current phrase into the first empty clip slot on this track as MIDI. |
 
+### Step lane
+
+The lane across the rack — and again, full width, at the top of the sound page
+— is the phrase itself: a note per onset, height for pitch against the tonic
+guide line, amber and heavier for an accent, width for gate, and a line back
+from each slid note to the one it glides from. It follows every mutation,
+reroll and drift, so what changed is visible instead of only audible.
+
+It also takes the mouse, for the three fixes a generated phrase most often
+needs (DESIGN.md §5.6):
+
+| Gesture | What it does |
+|---|---|
+| **Click** a note | Toggle its accent — velocity moves to the accent or the plain band with it. |
+| **Shift-click** a note | Toggle the slide *into* it from the note before, and open or close its gate to match. The phrase's first note has nothing to glide from, so it refuses. |
+| **Drag** a note | Move it in time and in pitch. It carries its velocity, gate, probability, timbre, wet and micro with it; an occupied column refuses, and the note drops back. |
+
+Nothing here adds or removes notes — that is **Density** and the **Rhythm**
+reroll, which decide a whole phrase at once. And an edit lasts one cycle: the
+generator mutates at phrase boundaries, so turn **Lock** on to keep one.
+
 ## Development
 
 - `device/pg-core.js` — the entire generative core (phrase identity, memory/lineage, tonal gravity, contour grammar, rhythmic cell families and bar form, rest grammar, accent hierarchy, directional slide logic, groove states, filter modes, phrase sound design, novelty budget, synth parameter mapping). Legacy `js` object, strict ES5.
-- `device/pg-lane.js` — the step lane: a `jsui` that draws the phrase the core publishes (DESIGN.md §5.4) — onsets, pitch, accent, slide, gate and microtiming. One script with two views, picked by a creation argument: `rack` is the strip that fills the device in Live, `window` the full-width lane across the top of the window's sound page. Read-only; it consumes `phrase` and `steps` and sends nothing back. ES5, `mgraphics`.
+- `device/pg-lane.js` — the step lane: a `jsui` that draws the phrase the core publishes (DESIGN.md §5.4) — onsets, pitch, accent, slide, gate and microtiming. One script with two views, picked by a creation argument: `rack` is the strip that fills the device in Live, `window` the full-width lane across the top of the window's sound page. It consumes `phrase` and `steps`, and sends `stepedit` back for the three mouse gestures (§5.6) — click to accent, shift-click to slide, drag to move — so it is a control as well as a display. It never applies an edit itself: the core answers with the phrase, and the lane redraws from that. ES5, `mgraphics`.
 - `device/pg-mod.js` — the mod rings: a click-through `jsui` laid over the sound page's dials that draws each phrase's *played* value as a second ring inside the knob (DESIGN.md §5.5), so the Design macro reads as modulation instead of as a dial disagreeing with itself. It takes the core's synth outlet whole and undoes `pushSynth`'s DSP scaling to get back to the dial's 0–1; the six inverses are the only thing it knows about §2.8. Read-only. ES5, `mgraphics`.
 - `scripts/build_device.py` — generates both devices programmatically. One `build(kind)` shares the UI, core, clock and persistence; `kind="instrument"` appends the synth and `plugout~` (`iiii`), `kind="midi"` appends `midiout` instead (`mmmm`). Only the PG-specific parts live here: control layout, parameter lists and the voice graph.
 - `m4lkit/` — the device-independent toolkit the builder sits on: patcher JSON + `.amxd` container writer, presentation-row layout for Live controls, the `[js]`-core plumbing (controls, clock, routing, smoothing, `[pattr]` persistence, MIDI out) and reusable DSP blocks. See `m4lkit/README.md`.
@@ -238,7 +259,7 @@ One deliberate limitation: `Restore` rebuilds `history` as `[phrase]`, because t
 
 - Max for Live instrument device (MIDI in → audio out)
 - Legacy `js` (ES5) for the generative core — `js pg-core.js`, four outlets: synth params / note events / display / the phrase itself
-- A `jsui` (`pg-lane.js`, `mgraphics`) draws that fourth outlet as a step lane, in the rack and again on the sound-design window's sound page. The rack strip sits where the waveform scope used to be; the scope moved into the window, under the lane and above the signal chain that shapes it. Both lanes are fed straight from the outlet, not through a `[route]` — `route` strips the selector it matches, and the lane needs `phrase` and `steps` to tell a header from a grid
+- A `jsui` (`pg-lane.js`, `mgraphics`) draws that fourth outlet as a step lane, in the rack and again on the sound-design window's sound page. The rack strip sits where the waveform scope used to be; the scope moved into the window, under the lane and above the signal chain that shapes it. Both lanes are fed straight from the outlet, not through a `[route]` — `route` strips the selector it matches, and the lane needs `phrase` and `steps` to tell a header from a grid. Both run back the other way too, into the core's inlet: the rack lane directly, the window's copy out through the subpatcher outlet its other controls use
 - A second `jsui` (`pg-mod.js`) rings the six dials the phrase's own sound pushes (§2.8) with the value actually reaching the synth, read off the core's *first* outlet — the stream driving the oscillators — so the ring cannot disagree with what is audible. One overlay per dial row, `ignoreclick` so the dials underneath keep the mouse
 - Plain MSP objects for the synth: `saw~`/`rect~` crossfaded by Wave (pulse width from PWM) → sine wavefolder crossfaded in by Fold → drive → `tanh~` → `svf~` tapped for **both** lowpass and bandpass and blended per filter mode → `tanh~` nonlinearity (drive in / trim out) → resonance-compensating `onepole~ 120` low shelf → per-note DC offset → `tanh~` → `onepole~ 10` DC blocker (§2.4 asymmetric saturation, so loud notes bark on even harmonics and quiet ones stay clean) → amp
 - Sub voice on its own path: octave-folded sine → saturator driven by SubSat with a compensating makeup gain → ducked by the filter envelope in proportion to resonance, so the sub steps out of the way of the squelch peak instead of fighting it

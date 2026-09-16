@@ -579,6 +579,55 @@ Nothing is drawn until the core has spoken. At **design 0** every ring lands
 exactly on its own dial's pointer, and the display degrades to "nothing is
 being pushed" — which at design 0 is the truth.
 
+## 5.6 Changing the phrase (step lane, inbound)
+
+A display of the notes that cannot be corrected sends the player back to the
+dice for a fault they can already see: one note in the wrong octave, one accent
+in the wrong place, and the only move is Mutate and hope. So the lane reads the
+mouse as well as the phrase, and three gestures cover what the generator gets
+wrong most often:
+
+| gesture | what it does |
+|---|---|
+| click a note | toggle its accent |
+| shift-click a note | toggle the slide **into** it, from the note before |
+| drag a note | move it in time and in pitch |
+
+Nothing here creates or deletes a note. How many notes there are is **Density**
+and **Rhythm** (§1.3, §1.4) — a whole-phrase decision the generator makes with
+a vocabulary the mouse does not have — and a lane that could also punch holes
+would quietly become a step sequencer with a generator bolted to its side.
+The three gestures fix a phrase; they do not replace the thing that wrote it.
+
+The lane sends, and does not decide:
+
+```
+stepedit accent <step>
+stepedit slide  <step>
+stepedit move   <from> <to> <pitch>
+```
+
+The core applies it, and the phrase comes back on the outlet the lane already
+reads, so the drawing is never a guess about what the edit did. A refused edit
+— a slide on the phrase's first note, which has nothing to glide from; a move
+onto a column that is taken — simply never comes back, and the note the drag
+was holding drops back where it was. The display is also, therefore, the one
+place an edit can fail visibly without an error message.
+
+What follows an edit follows it the way §1.8 and §1.9 would have written it.
+An accent rewrites the step's velocity into the accent band, and un-accenting
+lands on the plain band rather than the ghost one: a note the player just
+touched is deliberate, and a ghost is what the generator throws away. A slide
+opens the gate past the step's own length, and clearing one closes it back to
+the groove's legato. A move carries every lane the step owns — velocity, gate,
+probability, timbre, wet, micro — because it is the same note somewhere else,
+not a new one.
+
+An edit lasts one cycle. `phraseAdvance()` mutates at every phrase boundary
+(§1.1), so a hand-placed accent is gone by the next pass unless **Lock** is on.
+That is the existing contract for anything the player fixes in place, and the
+lane does not quietly change it: Lock is the gesture that says *keep this*.
+
 ---
 
 # 6. Meta controls

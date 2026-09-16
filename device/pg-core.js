@@ -702,17 +702,26 @@ function genSlides(rng, p, groove, densActual) {
   return slides;
 }
 
+// How much of its step a plain note holds: the groove's own legato, opened up
+// or closed down by Chunk. Four places need it — the two generators, the
+// mutation pass and a hand edit — and a phrase whose notes were written by two
+// slightly different versions of this line would sound ragged for no visible
+// reason, so it lives here once.
+function gateFrac(groove) {
+  return clamp(groove.gate * (1.7 - 1.1 * P.chunk), 0.15, 0.98);
+}
+
 // §5.3 regenerating one layer still has to leave the phrase playable: velocity
 // and gate read the accent and slide layers, so they follow when those change.
 // Timbre, wet and microtiming are left alone — they belong to other layers.
 function refreshDynamics(rng, p, groove) {
-  var gateFrac = clamp(groove.gate * (1.7 - 1.1 * P.chunk), 0.15, 0.98);
+  var gf = gateFrac(groove);
   for (var s = 0; s < p.onsets.length; s++) {
     if (!p.onsets[s]) { p.vels[s] = 0; p.gates[s] = 0; continue; }
     if (p.accents[s]) p.vels[s] = Math.floor(112 + rng() * 12);
     else if ((s % 4) !== 0 && rng() < 0.25) p.vels[s] = Math.floor(58 + rng() * 12);
     else p.vels[s] = Math.floor(82 + rng() * 18);
-    p.gates[s] = p.slides[s] ? 1.02 : gateFrac * (0.9 + rng() * 0.2);
+    p.gates[s] = p.slides[s] ? 1.02 : gf * (0.9 + rng() * 0.2);
   }
 }
 
@@ -721,7 +730,7 @@ function genStepMeta(rng, p, groove) {
   var n = p.onsets.length;
   p.gates = []; p.probs = []; p.timbres = []; p.wets = []; p.micros = [];
   var vels = [];
-  var gateFrac = clamp(groove.gate * (1.7 - 1.1 * P.chunk), 0.15, 0.98);
+  var gf = gateFrac(groove);
   for (var s = 0; s < n; s++) {
     var barPos = s % STEPS_PER_BAR;
     var beatPos = s % 4;
@@ -732,7 +741,7 @@ function genStepMeta(rng, p, groove) {
     if (p.accents[s]) vels[s] = Math.floor(112 + rng() * 12);
     else if (beatPos !== 0 && rng() < 0.25) vels[s] = Math.floor(58 + rng() * 12); // ghosts
     else vels[s] = Math.floor(82 + rng() * 18);
-    p.gates[s] = p.slides[s] ? 1.02 : gateFrac * (0.9 + rng() * 0.2);
+    p.gates[s] = p.slides[s] ? 1.02 : gf * (0.9 + rng() * 0.2);
     p.probs[s] = (barPos % 4 === 0) ? 1.0 : clamp(1 - P.novelty * 0.3 * rng(), 0.7, 1);
     p.timbres[s] = p.accents[s] ? 0.15 + rng() * 0.15 : (rng() - 0.5) * 0.3;
     p.wets[s] = (beatPos === 2 ? 0.12 : 0) + rng() * 0.15;
@@ -921,7 +930,7 @@ function mutatePhrase(parent, novelty) {
 // §4.3 novelty budget applied to the per-step sound layers
 function mutateMeta(rng, p, alloc) {
   var n = p.onsets.length;
-  var gateFrac = clamp(grooveNow().gate * (1.7 - 1.1 * P.chunk), 0.15, 0.98);
+  var gf = gateFrac(grooveNow());
   for (var s = 0; s < n; s++) {
     if (!p.onsets[s]) {
       p.gates[s] = 0; p.probs[s] = 0; p.timbres[s] = 0;
@@ -929,7 +938,7 @@ function mutateMeta(rng, p, alloc) {
       continue;
     }
     if (!(p.vels[s] > 0)) p.vels[s] = Math.floor(82 + rng() * 18);
-    p.gates[s] = p.slides[s] ? 1.02 : gateFrac * (0.9 + rng() * 0.2);
+    p.gates[s] = p.slides[s] ? 1.02 : gf * (0.9 + rng() * 0.2);
     if (rng() < alloc.timbre) p.timbres[s] = clamp(p.timbres[s] + (rng() - 0.5) * 0.5, -0.6, 0.6);
     if (rng() < alloc.wet) p.wets[s] = clamp(p.wets[s] + (rng() - 0.5) * 0.35, 0, 0.6);
   }
@@ -1459,6 +1468,119 @@ function root(i) { // §5.3-adjacent: live transpose, phrase identity intact
     pushState();
     pushPhrase();   // transpose leaves the status line alone, but moves the lane
   }
+}
+
+// ---------------------------------------------------------------- hand edits
+// §5.6 the step lane is a control as well as a display. pg-lane.js sends one
+// of these per gesture, and each one is a request, not a fact: the core owns
+// the phrase, so everything the lane can ask for is checked here, and a
+// refused edit simply never comes back — which the lane reads, correctly, as
+// the note staying where it was.
+//
+//   stepedit accent <step>                toggle the accent on that onset
+//   stepedit slide  <step>                toggle the slide into it
+//   stepedit move   <from> <to> <pitch>   move it in time and in pitch
+//
+// Velocity and gate follow a hand edit exactly as refreshDynamics() makes them
+// follow the layer buttons: an accent is a velocity band and a tie is a gate
+// of 1.02, neither of which is anyone's to set by hand. Timbre, wet and
+// microtiming travel with the note untouched — they belong to other layers.
+//
+// An edit lasts as long as the phrase does, and by default that is one cycle:
+// phraseBoundary() mutates unless P.lock is set. Lock is what makes a hand
+// edit permanent, and editing is most of the reason Lock is there.
+var FLAG_LANES = ["onsets", "accents", "slides"];
+var VAL_LANES = ["pitches", "vels", "gates", "probs", "timbres", "wets", "micros"];
+
+function stepedit(what, a, b, c) {
+  var p = phrase;
+  if (!p || !p.onsets) return;
+  var s = Math.floor(a), k = String(what);
+  if (!(s >= 0 && s < p.onsets.length) || !p.onsets[s]) return;
+
+  var ok = false;
+  if (k === "accent") ok = editAccent(p, s);
+  else if (k === "slide") ok = editSlide(p, s);
+  else if (k === "move") ok = editMove(p, s, Math.floor(b), Math.floor(c));
+  if (!ok) return;
+
+  pushState();
+  pushPhrase();   // the lane redraws from the phrase, never from its own guess
+}
+
+// One private stream per edit, and only when an edit is actually taken, so a
+// refused gesture costs no draw and clicking around does not walk the chaos
+// stream somewhere the next mutation will show.
+function editRng() {
+  return makeRng(Math.floor(chaosRng() * 2147483646) + 1);
+}
+
+function gateFor(p, s, rng) {
+  return p.slides[s] ? 1.02 : gateFrac(grooveNow()) * (0.9 + rng() * 0.2);
+}
+
+function prevOnset(p, s) {
+  for (var t = s - 1; t >= 0; t--) if (p.onsets[t]) return t;
+  return -1;
+}
+
+function firstOnset(p) {
+  for (var t = 0; t < p.onsets.length; t++) if (p.onsets[t]) return t;
+  return -1;
+}
+
+function editAccent(p, s) {
+  var rng = editRng();
+  p.accents[s] = !p.accents[s];
+  // the two bands genStepMeta() draws from. Un-accenting lands on the plain
+  // band rather than the ghost one: a note just placed by hand is deliberate,
+  // and a ghost is something the generator decides to throw away.
+  p.vels[s] = Math.floor(p.accents[s] ? 112 + rng() * 12 : 82 + rng() * 18);
+  return true;
+}
+
+function editSlide(p, s) {
+  // slides[s] means s is slid *into* from the onset before it — how fireStep()
+  // reads it, and why genSlides() only ever marks ons[k + 1]. So the phrase's
+  // first note has nothing to slide from and the gesture is refused there.
+  if (prevOnset(p, s) < 0) return false;
+  p.slides[s] = !p.slides[s];
+  p.gates[s] = gateFor(p, s, editRng());
+  return true;
+}
+
+function editMove(p, s, to, pitch) {
+  var n = p.onsets.length, i;
+  if (!(to >= 0 && to < n)) return false;
+  if (!(pitch >= 0)) return false;    // a short "move" would clamp to NaN, silently
+  if (to !== s && p.onsets[to]) return false;          // that column is taken
+  pitch = clamp(Math.floor(pitch), P.root, P.root + 24);   // GRAVITY's own range
+  if (to === s && pitch === p.pitches[s]) return false;    // nothing to do
+
+  // Every lane travels with the note. Moving only the onset would leave its
+  // velocity, gate and swing behind on a step that no longer sounds, and the
+  // note would arrive as a default one.
+  if (to !== s) {
+    for (i = 0; i < FLAG_LANES.length; i++) {
+      p[FLAG_LANES[i]][to] = p[FLAG_LANES[i]][s];
+      p[FLAG_LANES[i]][s] = false;
+    }
+    for (i = 0; i < VAL_LANES.length; i++) {
+      p[VAL_LANES[i]][to] = p[VAL_LANES[i]][s];
+      p[VAL_LANES[i]][s] = 0;
+    }
+  }
+  p.pitches[to] = pitch;
+
+  // A move can put a slid note at the front of the phrase, or vacate the front
+  // and promote one into it. Either way the invariant is the same one
+  // genSlides() keeps, and the freed note's gate follows the answer.
+  var first = firstOnset(p);
+  if (first >= 0 && p.slides[first]) {
+    p.slides[first] = false;
+    p.gates[first] = gateFor(p, first, editRng());
+  }
+  return true;
 }
 
 function plen(i) {
